@@ -14,7 +14,8 @@
             [kajero.record :as record]
             [kajero.select :as select]
             [kajero.standing :as standing]
-            [kajero.store :as store])
+            [kajero.store :as store]
+            [kajero.tik :as tik])
   (:import (java.time Instant)))
 
 (def ^:dynamic *now*
@@ -27,9 +28,28 @@
 
 (defn notebook
   "{:path \"notes.db\"} for SQLite or {:dir \"notes/\"} for flat files, with
-   :signing :optional|:required and :actors \"allowed_signers\"."
-  [{:keys [signing actors] :or {signing :optional} :as opts}]
-  {:store (store/open opts) :signing signing :actors actors})
+   :signing :optional|:required, :actors \"allowed_signers\", and :tik-root, the
+   tik store whose tickets evidence may cite as tik:<id>. :tik-status replaces
+   the lookup of a ticket, for tests."
+  [{:keys [signing actors tik-root tik-status] :or {signing :optional} :as opts}]
+  {:store (store/open opts) :signing signing :actors actors
+   :tik-status (or tik-status (when tik-root (tik/status-in tik-root)))})
+
+(defn- check-tickets!
+  "Refuses evidence citing a ticket the bound tik store does not hold. A
+   notebook bound to no store takes citations unchecked."
+  [{:keys [tik-status]} evidence]
+  (when tik-status
+    (doseq [id (tik/ticket-ids evidence)]
+      (when-not (tik-status id)
+        (throw (ex-info (str "the tik store holds no ticket " id) {:reason :kajero/no-ticket :ticket id}))))))
+
+(defn tickets
+  "The tickets an entry's records cite, with their title and current stages
+   when the notebook is bound to a tik store."
+  [{:keys [tik-status]} records]
+  (vec (for [id (distinct (mapcat (comp tik/ticket-ids :evidence) records))]
+         (or (when tik-status (tik-status id)) {:ticket id}))))
 
 (defn- refuse!
   [reason message data]
@@ -89,17 +109,23 @@
                 rev (filter #(= (record/hash-of rev) (:revision %)) observations) (now))
      :links (mapv #(select-keys % [:source :type :target]) links)
      :superseded? (boolean (some #(and (= "supersedes" (:type %)) (= entry (:target %))) links))
-     :actors (into #{} (map :actor) (concat revisions observations))}))
+     :actors (into #{} (map :actor) (concat revisions observations))
+     :ticket-ids (into #{} (mapcat (comp tik/ticket-ids :evidence)) (concat revisions observations))}))
 
 (defn entry
-  "The entry with its current revision, standing and links, or nil."
+  "The entry with its current revision, standing, links and the tickets its
+   records cite, or nil."
   [nb id]
-  (when (current nb id) (dissoc (view nb id) :actors)))
+  (when (current nb id)
+    (-> (view nb id)
+        (dissoc :actors :ticket-ids)
+        (assoc :tickets (tickets nb (concat (revisions-of nb id) (observations-of nb id)))))))
 
 (defn- row
-  [{:keys [title body labels standing signed? superseded? actors] :as v}]
+  [{:keys [title body labels standing signed? superseded? actors ticket-ids] :as v}]
   {:labels labels
    :actors actors
+   :tickets ticket-ids
    :haystack (str/lower-case (str/join " " (concat [title body (some-> (:data v) pr-str)]
                                                    (map #(str/join "=" %) labels))))
    :disputed? (:disputed? standing)
@@ -196,6 +222,7 @@
   [nb {:keys [title body labels evidence actor key] :as opts}]
   (check-actor! actor)
   (check-content! {:title title :labels labels})
+  (check-tickets! nb evidence)
   (let [id (str (random-uuid))
         base-rec (cond-> {:entry id :seq 1 :base nil :title title :body (or body "") :labels labels
                           :evidence (vec evidence) :actor actor :at (str (now))}
@@ -214,6 +241,7 @@
    current revision, so two writers can not overwrite each other unseen."
   [nb id {:keys [base title body labels evidence actor key] :as opts}]
   (check-actor! actor)
+  (check-tickets! nb evidence)
   (let [cur (or (current nb id) (refuse! :kajero/no-entry (str "no entry " id) {:entry id}))
         cur-hash (record/hash-of cur)]
     (when (not= base cur-hash)
@@ -247,6 +275,7 @@
     (refuse! :kajero/bad-outcome "an observation is held or failed" {:outcome outcome}))
   (when (and (= "failed" outcome) (empty? evidence))
     (refuse! :kajero/no-evidence "a failed observation needs evidence" {}))
+  (check-tickets! nb evidence)
   (let [revs (into {} (map (juxt record/hash-of identity)) (revisions-of nb id))
         cur (current nb id)
         target (or revision (some-> cur record/hash-of))]

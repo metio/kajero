@@ -48,6 +48,14 @@ it is written, records which schema revision it fit, and orders its table
 columns by the schema. Schemas are data only: a schema that would evaluate a
 function is refused.
 
+## tik tickets as evidence
+
+Evidence of the form `tik:<ticket id>` cites a ticket of the tik store named
+by `KAJERO_TIK_ROOT`. A write citing a ticket that store does not hold is
+refused; a notebook bound to no store takes citations unchecked. Entries
+show each cited ticket with its title and the stages it derives at the time
+of reading, and `ticket=<id>` selects every entry whose records cite it.
+
 ## Storage
 
 A notebook lives in one SQLite database (`KAJERO_DB`, default `notes.db`),
@@ -80,6 +88,7 @@ label:system=calico label:kind not disputed ~apiservices
 | `label:key` | with the label |
 | `label:key=value` | with the label set to the value |
 | `actor=name` | that the actor wrote or observed |
+| `ticket=<id>` | whose records cite the tik ticket as evidence |
 | `disputed`, `stale`, `unsigned`, `superseded` | in that derived state |
 | `~text` or a bare word | whose title, body or labels contain the text |
 

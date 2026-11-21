@@ -131,6 +131,9 @@ table.grid-data tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transp
 table.grid-data td.num{text-align:right;font-variant-numeric:tabular-nums}
 dl.data{display:grid;grid-template-columns:max-content 1fr;gap:.3rem 1rem;font-size:.92rem}
 dl.data dt{font-family:ui-monospace,Menlo,monospace;color:var(--muted)}dl.data dd{margin:0}
+.ticket{display:inline-flex;gap:.4rem;align-items:center;font:12px/1.2 ui-monospace,Menlo,monospace;
+border:1px solid var(--rule);border-radius:6px;padding:.3rem .55rem;margin:.15rem .3rem .15rem 0}
+.ticket .stage{color:var(--accent)}
 .schema-note{font-size:.8rem;color:var(--muted)}
 @media (max-width:640px){h1{font-size:1.7rem}.sheet{padding:1.1rem 1rem 1.1rem 2.2rem}}
 ")
@@ -237,6 +240,15 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
        [:p.schema-note "fits schema " [:a {:href (str "/e/" (:entry schema))}
                                        (or (:title (k/entry nb (:entry schema))) (:entry schema))]])]))
 
+(defn- ticket-chips [tickets]
+  (when (seq tickets)
+    [:div {:style "margin:.4rem 0"}
+     (for [{:keys [ticket title current]} tickets]
+       [:a.ticket {:href (view-href (str "ticket=" ticket)) :title (str "entries citing tik ticket " ticket)}
+        [:span "tik " (subs ticket 0 8)]
+        (when title [:span title])
+        (when (seq current) [:span.stage (str/join " " current)])])]))
+
 (defn- sheet [nb {:keys [entry title body labels at actor standing signed?] :as e} full?]
   [:article.sheet
    [:h3 [:a {:href (str "/e/" entry)} title]]
@@ -312,7 +324,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
    [:div.selector {:title hash} (subs hash 0 (min 19 (count hash)))]])
 
 (defn- entry-page [nb id token]
-  (when-let [{:keys [title body labels standing evidence links revision actor at signed?] :as e} (k/entry nb id)]
+  (when-let [{:keys [title body labels standing evidence links revision actor at signed? tickets] :as e} (k/entry nb id)]
     (layout {:title title}
             [:article.sheet
              [:h1 title]
@@ -321,6 +333,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
              [:div.body (markdown body)]
              (data-view nb e)
              (when (seq evidence) [:p.meta "evidence: " (str/join "; " evidence)])
+             (ticket-chips tickets)
              [:p.meta actor " · " (when-str at) " · " [:span.selector revision]]
              (when (seq links)
                [:p.meta "links: "
@@ -501,6 +514,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
         nb (k/notebook {:dir (env "KAJERO_DIR")
                         :path (or (env "KAJERO_DB") "notes.db")
                         :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
-                        :actors (env "KAJERO_ACTORS")})]
+                        :actors (env "KAJERO_ACTORS")
+                        :tik-root (env "KAJERO_TIK_ROOT")})]
     (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port)
     (println (str "kajero on http://127.0.0.1:" port))))
