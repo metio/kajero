@@ -9,6 +9,8 @@
      label:kind=gotcha          present and equal
      actor=seb                  some revision or observation by seb
      ticket=<id>                some record cites tik:<id> as evidence
+     schema-revision=<hash>     the data was checked against that schema revision
+     outdated-schema            the data was checked against an older schema revision
      disputed | stale | unsigned | superseded
      ~text  (or a bare word)    title, body or labels contain it
 
@@ -34,6 +36,11 @@
       (if (some? v)
         #(= v (get-in % [:labels k]))
         #(contains? (:labels %) k)))
+
+    (str/starts-with? term "schema-revision=")
+    (let [h (subs term 16)] #(= h (:schema-revision %)))
+
+    (= term "outdated-schema") :outdated-schema?
 
     (str/starts-with? term "ticket=")
     (let [id (subs term 7)] #(contains? (:tickets %) id))

@@ -11,6 +11,7 @@
    checked against the actors file before anything is written."
   (:require [clojure.string :as str]
             [kajero.data :as data]
+            [kajero.migrate :as migrate]
             [kajero.record :as record]
             [kajero.select :as select]
             [kajero.standing :as standing]
@@ -109,8 +110,12 @@
                 rev (filter #(= (record/hash-of rev) (:revision %)) observations) (now))
      :links (mapv #(select-keys % [:source :type :target]) links)
      :superseded? (boolean (some #(and (= "supersedes" (:type %)) (= entry (:target %))) links))
+     :outdated-schema? (boolean (when-let [{schema-entry :entry pinned :revision} (:schema rev)]
+                                  (not= pinned (some-> (peek (revisions-of nb schema-entry)) record/hash-of))))
      :actors (into #{} (map :actor) (concat revisions observations))
      :ticket-ids (into #{} (mapcat (comp tik/ticket-ids :evidence)) (concat revisions observations))}))
+
+(declare schema-users)
 
 (defn entry
   "The entry with its current revision, standing, links and the tickets its
@@ -119,11 +124,15 @@
   (when (current nb id)
     (-> (view nb id)
         (dissoc :actors :ticket-ids)
+        (cond-> (= "schema" (get-in (current nb id) [:labels "kind"]))
+          (assoc :used-by (schema-users nb id)))
         (assoc :tickets (tickets nb (concat (revisions-of nb id) (observations-of nb id)))))))
 
 (defn- row
-  [{:keys [title body labels standing signed? superseded? actors ticket-ids] :as v}]
+  [{:keys [title body labels standing signed? superseded? actors ticket-ids outdated-schema?] :as v}]
   {:labels labels
+   :schema-revision (get-in v [:schema :revision])
+   :outdated-schema? outdated-schema?
    :actors actors
    :tickets ticket-ids
    :haystack (str/lower-case (str/join " " (concat [title body (some-> (:data v) pr-str)]
@@ -190,22 +199,56 @@
                   {:entry % :title (:title rev)})))
        vec))
 
+(defn- successor
+  "The entry that supersedes `id`, or nil."
+  [nb id]
+  (some #(when (and (= "supersedes" (:type %)) (= id (:target %))) (:source %)) (links-of nb id)))
+
+(defn- deprecation
+  "Why the schema entry should no longer be used, or nil: a deprecated label
+   on its current revision, or an entry superseding it."
+  [nb schema-id schema-rev]
+  (let [label (get-in schema-rev [:labels "deprecated"])
+        next-id (successor nb schema-id)]
+    (when (or label next-id)
+      (str "schema " schema-id " is deprecated"
+           (when (and label (not= "true" label)) (str " (" label ")"))
+           (when next-id (str "; use " next-id))))))
+
+(defn- schema-entry!
+  "The current revision of the schema entry `id`, refusing anything else."
+  [nb id]
+  (let [rev (or (current nb id) (refuse! :kajero/no-schema (str "no schema entry " id) {:schema id}))]
+    (when-not (= "schema" (get-in rev [:labels "kind"]))
+      (refuse! :kajero/no-schema (str id " is not labelled kind=schema") {:schema id}))
+    rev))
+
 (defn- check-data!
-  "The schema reference a revision records: {:entry :revision} of the schema
+  "{:ref :warnings} for a revision: :ref is {:entry :revision} of the schema
    entry its schema= label names, after checking the data against it. A
-   kind=schema entry's own data must be a malli schema."
-  [nb {:keys [labels] :as rec}]
-  (when (= "schema" (get labels "kind"))
-    (data/schema (:data rec)))
+   kind=schema entry's own data must be a malli schema, and a kind=migration
+   entry's a migration between two schema entries. A new entry may not use a
+   deprecated schema; a revision of an existing one may, with a warning, so
+   old entries stay correctable until they are migrated."
+  [nb {:keys [labels] :as rec} new?]
+  (case (get labels "kind")
+    "schema" (data/schema (:data rec))
+    "migration" (if-let [errors (migrate/explain (:data rec))]
+                  (refuse! :kajero/bad-migration (str "the data is not a migration: " (pr-str errors))
+                           {:errors errors})
+                  (do (schema-entry! nb (get-in rec [:data :from]))
+                      (schema-entry! nb (get-in rec [:data :to]))))
+    nil)
   (when-let [schema-id (get labels "schema")]
-    (let [schema-rev (or (current nb schema-id)
-                         (refuse! :kajero/no-schema (str "no schema entry " schema-id) {:schema schema-id}))]
-      (when-not (= "schema" (get-in schema-rev [:labels "kind"]))
-        (refuse! :kajero/no-schema (str schema-id " is not labelled kind=schema") {:schema schema-id}))
+    (let [schema-rev (schema-entry! nb schema-id)
+          deprecated (deprecation nb schema-id schema-rev)]
+      (when (and deprecated new?)
+        (refuse! :kajero/deprecated-schema deprecated {:schema schema-id :successor (successor nb schema-id)}))
       (when-let [errors (data/explain (:data schema-rev) (:data rec))]
         (refuse! :kajero/bad-data (str "the data does not fit schema " schema-id ": " (pr-str errors))
                  {:schema schema-id :errors errors}))
-      {:entry schema-id :revision (record/hash-of schema-rev)})))
+      {:ref {:entry schema-id :revision (record/hash-of schema-rev)}
+       :warnings (when deprecated [deprecated])})))
 
 (defn- check-content!
   [{:keys [title labels]}]
@@ -227,7 +270,7 @@
         base-rec (cond-> {:entry id :seq 1 :base nil :title title :body (or body "") :labels labels
                           :evidence (vec evidence) :actor actor :at (str (now))}
                    (some? (:data opts)) (assoc :data (:data opts)))
-        schema-ref (check-data! nb base-rec)
+        {schema-ref :ref} (check-data! nb base-rec true)
         rec (cond-> base-rec schema-ref (assoc :schema schema-ref))
         warnings (label-warnings nb labels)
         similar (similar nb rec)]
@@ -253,7 +296,7 @@
                             :evidence (vec evidence) :actor actor :at (str (now))}
                      (some? data) (assoc :data data))
           _ (check-content! base-rec)
-          schema-ref (check-data! nb base-rec)
+          {schema-ref :ref schema-warnings :warnings} (check-data! nb base-rec false)
           rec (cond-> base-rec schema-ref (assoc :schema schema-ref))]
       {:entry id
        ;; another writer may land the same :seq between the check above and
@@ -264,7 +307,7 @@
                           (refuse! :kajero/stale-base (ex-message e)
                                    {:entry id :current (some-> (current nb id) record/hash-of)})
                           (throw e))))
-       :warnings (when labels (label-warnings nb labels))})))
+       :warnings (not-empty (concat schema-warnings (when labels (label-warnings nb labels))))})))
 
 (defn observe!
   "Records that `actor` checked a revision (the current one by default) and
@@ -325,3 +368,68 @@
 (defn page
   [nb name]
   (some #(when (= name (:name %)) %) (pages nb)))
+
+;; ------------------------------------------------------------- schemas
+
+(defn schema-users
+  "The entries whose current revision uses the schema entry `id`, each with
+   the schema revision it was checked against and whether that is the
+   schema's current one."
+  [nb id]
+  (let [now-rev (some-> (current nb id) record/hash-of)]
+    (vec (for [e (entry-ids nb)
+               :let [rev (current nb e)]
+               :when (= id (get-in rev [:labels "schema"]))]
+           {:entry e :title (:title rev) :schema-revision (get-in rev [:schema :revision])
+            :current? (= now-rev (get-in rev [:schema :revision]))}))))
+
+(defn migrate!
+  "Moves every entry whose current revision uses the migration's :from
+   schema onto its :to schema: a new revision per entry, with the data the
+   steps produce, labelled schema=<to>, citing the migration revision as
+   evidence and checked against the new schema like any other write.
+
+   Every entry is converted and checked before the first write; when one
+   fails, nothing is written and the refusal lists them all. With
+   :dry-run? it only reports what would happen. An entry somebody revised
+   meanwhile is reported as stale and keeps its schema, so running the
+   migration again converts what is left."
+  [nb migration-id {:keys [actor key dry-run?]}]
+  (check-actor! actor)
+  (let [mig (or (current nb migration-id)
+                (refuse! :kajero/no-entry (str "no entry " migration-id) {:entry migration-id}))
+        _ (when-not (= "migration" (get-in mig [:labels "kind"]))
+            (refuse! :kajero/no-migration (str migration-id " is not labelled kind=migration") {:entry migration-id}))
+        {:keys [from to] :as spec} (:data mig)
+        evidence [(str "kajero:migration " migration-id "@" (record/hash-of mig))]
+        plan (vec (for [e (entry-ids nb)
+                        :let [rev (current nb e)]
+                        :when (= from (get-in rev [:labels "schema"]))]
+                    (try
+                      (let [new-data (migrate/run spec (:data rev))
+                            labels (assoc (:labels rev) "schema" to)]
+                        (check-data! nb {:labels labels :data new-data} false)
+                        {:entry e :base (record/hash-of rev) :data new-data :labels labels})
+                      (catch Exception ex
+                        {:entry e :error (ex-message ex)}))))
+        failed (filterv :error plan)]
+    (cond
+      dry-run? {:migration migration-id :entries (mapv #(dissoc % :labels :base) plan)}
+
+      (seq failed)
+      (refuse! :kajero/migration-failed
+               (str (count failed) " of " (count plan) " entries do not convert: "
+                    (pr-str (mapv #(select-keys % [:entry :error]) failed)))
+               {:failed failed})
+
+      :else
+      {:migration migration-id
+       :entries (mapv (fn [{:keys [entry base data labels]}]
+                        (try
+                          (let [{:keys [revision]} (revise! nb entry {:base base :data data :labels labels
+                                                                      :evidence evidence :actor actor :key key})]
+                            {:entry entry :status :migrated :revision revision})
+                          (catch clojure.lang.ExceptionInfo ex
+                            {:entry entry :status (if (= :kajero/stale-base (:reason (ex-data ex))) :stale :refused)
+                             :error (ex-message ex)})))
+                      plan)})))

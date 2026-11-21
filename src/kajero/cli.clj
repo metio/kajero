@@ -29,9 +29,11 @@
   revise ID --base REV [--title T] [--body B] [--data EDN] [--label K=V...] [--evidence E...]
   observe ID held|failed [--revision REV] --evidence E...
   link SOURCE supersedes|see-also|contradicts TARGET
+  migrate MIGRATION-ID [dry-run]          move entries onto the migration's schema
 
   A body or data of - reads it from stdin. Data is EDN; an entry labelled
-  kind=schema holds a malli schema, and schema=ID checks data against one.")
+  kind=schema holds a malli schema, and schema=ID checks data against one.
+  An entry labelled kind=migration holds {:from SCHEMA :to SCHEMA :steps [...]}.")
 
 (defn- env [k] (not-empty (System/getenv k)))
 
@@ -83,6 +85,7 @@
                                                             :evidence (get flags :evidence)}))
       "link" (let [[source type target] pos]
                (k/link! nb (merge (writer) {:source source :type type :target target})))
+      "migrate" (k/migrate! nb (first pos) (assoc (writer) :dry-run? (= "dry-run" (second pos))))
       (throw (ex-info usage {:reason :kajero/usage})))))
 
 (defn -main

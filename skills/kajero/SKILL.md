@@ -52,7 +52,8 @@ kajero_search {"selector": "label:system=calico ~apiservices"}
 ```
 
 Selector terms, all of which must hold, each optionally prefixed `not`:
-`label:key`, `label:key=value`, `actor=name`, `ticket=<tik ticket id>`, `disputed`, `stale`,
+`label:key`, `label:key=value`, `actor=name`, `ticket=<tik ticket id>`,
+`schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
 `unsigned`, `superseded`, and `~text` (or a bare word) for title, body and
 labels. It is tik's `--where` grammar.
 
@@ -94,6 +95,14 @@ write an entry labelled `kind=schema` whose data is a malli schema such as
 `schema=<schema entry id>`. A write whose data does not fit is refused with
 malli's errors; fix the data, or revise the schema when the shape really
 changed. Search `label:kind=schema` before inventing a new one.
+
+When a shape changes, revise the schema entry if old data still fits it.
+Otherwise write a new schema, link it as `supersedes` the old one, and write
+a `kind=migration` entry whose data is
+`{:from old :to new :steps [[:rename :name :host] ...]}`. Run
+`kajero_migrate` with `dry_run` first, then without; it converts every entry
+on the old schema or nothing. `outdated-schema` finds entries checked
+against an older revision of their schema.
 
 ## Revising
 

@@ -214,17 +214,30 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
 (defn- pretty [x] (with-out-str (pp/pprint x)))
 
 (defn- schema-form [nb {:keys [schema]}]
-  (when schema (:data (k/entry nb (:entry schema)))))
+  (when schema (:data (k/current nb (:entry schema)))))
 
 (defn- data-view
   "The revision's data for a human: a sortable table for a list of maps, a
    definition list for a map, a schema as EDN, anything else pretty-printed."
-  [nb {:keys [data labels schema] :as e}]
+  [nb {:keys [data labels schema used-by outdated-schema?] :as e}]
   (when (contains? e :data)
     [:div.data
      (cond
        (= "schema" (get labels "kind"))
-       (list [:p.schema-note "malli schema"] [:pre [:code (pretty data)]])
+       (list [:p.schema-note "malli schema"] [:pre [:code (pretty data)]]
+             (when (seq used-by)
+               [:p.schema-note (str "used by " (count used-by) " "
+                                    (if (= 1 (count used-by)) "entry" "entries") ": ")
+                (interpose ", " (for [{:keys [entry title current?]} used-by]
+                                  [:span [:a {:href (str "/e/" entry)} title]
+                                   (when-not current? " (older revision)")]))]))
+
+       (= "migration" (get labels "kind"))
+       (list [:p.schema-note "migration from "
+              [:a {:href (str "/e/" (:from data))} (or (:title (k/current nb (:from data))) (:from data))]
+              " to "
+              [:a {:href (str "/e/" (:to data))} (or (:title (k/current nb (:to data))) (:to data))]]
+             [:pre [:code (pretty (:steps data))]])
 
        (data/table? data)
        (let [cols (data/columns data (schema-form nb e))]
@@ -240,7 +253,8 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
        :else [:pre [:code (pretty data)]])
      (when schema
        [:p.schema-note "fits schema " [:a {:href (str "/e/" (:entry schema))}
-                                       (or (:title (k/entry nb (:entry schema))) (:entry schema))]])]))
+                                       (or (:title (k/current nb (:entry schema))) (:entry schema))]
+        (when outdated-schema? " in an older revision; the schema changed since")])]))
 
 (defn- ticket-chips [tickets]
   (when (seq tickets)

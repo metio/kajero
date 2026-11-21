@@ -48,6 +48,34 @@ it is written, records which schema revision it fit, and orders its table
 columns by the schema. Schemas are data only: a schema that would evaluate a
 function is refused.
 
+### Changing a schema
+
+A schema entry is revised like any other entry, and each data revision keeps
+the schema revision it was checked against. `outdated-schema` selects the
+entries checked against an older schema revision, `schema-revision=<hash>`
+those checked against one revision, and a schema entry lists the entries
+using it.
+
+A schema labelled `deprecated` (with an optional reason as the value), or
+superseded by another entry through a `supersedes` link, takes no new
+entries; revisions of existing entries still pass, with a warning, so they
+stay correctable until they move.
+
+An entry labelled `kind=migration` moves them:
+
+```clojure
+{:from "<old schema entry>" :to "<new schema entry>"
+ :steps [[:rename :name :host] [:drop :legacy] [:default :role "worker"]
+         [:set :checked true] [:map-values :role {"master" "control-plane"}]
+         [:move [:spec :cpus] [:cores]]]}
+```
+
+`kajero migrate <id> dry-run` (or `kajero_migrate` with `dry_run`) shows the
+converted data; without it, every entry on the old schema gets a new
+revision on the new one, citing the migration revision as evidence. If any
+entry fails to convert or to fit the new schema, nothing is written. Steps
+are data only; a migration can not run a function.
+
 ## MCP over HTTP
 
 With `KAJERO_MCP_TOKEN_FILE` set, the page server also speaks MCP on `/mcp`,
@@ -123,6 +151,8 @@ label:system=calico label:kind not disputed ~apiservices
 | `label:key=value` | with the label set to the value |
 | `actor=name` | that the actor wrote or observed |
 | `ticket=<id>` | whose records cite the tik ticket as evidence |
+| `schema-revision=<hash>` | whose data was checked against that schema revision |
+| `outdated-schema` | whose data was checked against an older schema revision |
 | `disputed`, `stale`, `unsigned`, `superseded` | in that derived state |
 | `~text` or a bare word | whose title, body or labels contain the text |
 
