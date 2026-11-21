@@ -63,3 +63,14 @@
     (is (= 400 (:status (post nb "/new" {"token" "guess" "title" "x" "labels" "kind=fact"}))))
     (is (= 403 (:status (post nb "/new" {"token" "t0ken" "title" "x" "labels" "kind=fact"} true))))
     (is (empty? (k/search nb "")))))
+
+(deftest data-renders-as-a-sortable-table-in-schema-order
+  (let [nb (notebook)
+        {schema :entry} (k/write! nb {:title "Nodes" :labels {"kind" "schema"}
+                                      :data [:vector [:map [:name :string] [:cpus :int]]] :actor "claude"})
+        {:keys [entry]} (k/write! nb {:title "Cluster nodes" :labels {"kind" "fact" "schema" schema}
+                                      :data [{:cpus 8 :name "w-1"}] :actor "claude"})
+        body (:body (get-page nb (str "/e/" entry)))]
+    (is (str/includes? body "<table class=\"grid-data\">"))
+    (is (re-find #"<th>name</th><th>cpus</th>" body) "columns follow the schema")
+    (is (str/includes? (:body (get-page nb (str "/e/" schema))) "malli schema"))))

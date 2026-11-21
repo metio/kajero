@@ -11,7 +11,8 @@
      KAJERO_ACTORS   the allowed-signers file signatures are checked against
      KAJERO_ACTOR    the actor a write names
      KAJERO_KEY      the private key a write is signed with"
-  (:require [clojure.pprint :as pp]
+  (:require [clojure.edn :as edn]
+            [clojure.pprint :as pp]
             [clojure.string :as str]
             [kajero.core :as k])
   (:gen-class))
@@ -23,12 +24,13 @@
   get ID                                  one entry with its standing
   history ID                              every record of an entry
   labels                                  labels in use, with counts
-  write TITLE [--body B] --label K=V... [--evidence E...]
-  revise ID --base REV [--title T] [--body B] [--label K=V...] [--evidence E...]
+  write TITLE [--body B] [--data EDN] --label K=V... [--evidence E...]
+  revise ID --base REV [--title T] [--body B] [--data EDN] [--label K=V...] [--evidence E...]
   observe ID held|failed [--revision REV] --evidence E...
   link SOURCE supersedes|see-also|contradicts TARGET
 
-  A body of - reads it from stdin.")
+  A body or data of - reads it from stdin. Data is EDN; an entry labelled
+  kind=schema holds a malli schema, and schema=ID checks data against one.")
 
 (defn- env [k] (not-empty (System/getenv k)))
 
@@ -49,6 +51,15 @@
   (when-let [ls (seq (get flags :label))]
     (into {} (map #(let [[k v] (str/split % #"=" 2)] [k (or v "")])) ls)))
 
+(defn- read-edn
+  [s]
+  (try (edn/read-string s)
+       (catch Exception e
+         (throw (ex-info (str "the data is not EDN: " (ex-message e)) {:reason :kajero/bad-edn})))))
+
+(defn- data-of [flags]
+  (when (contains? flags :data) {:data (read-edn (one flags :data))}))
+
 (defn- writer []
   {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")})
 
@@ -61,10 +72,12 @@
       "history" (k/history nb (first pos))
       "labels" (k/labels nb)
       "write" (k/write! nb (merge (writer) {:title (first pos) :body (one flags :body)
-                                            :labels (labels-of flags) :evidence (get flags :evidence)}))
+                                            :labels (labels-of flags) :evidence (get flags :evidence)}
+                                  (data-of flags)))
       "revise" (k/revise! nb (first pos) (merge (writer) {:base (one flags :base) :title (one flags :title)
                                                           :body (one flags :body) :labels (labels-of flags)
-                                                          :evidence (get flags :evidence)}))
+                                                          :evidence (get flags :evidence)}
+                                                (data-of flags)))
       "observe" (k/observe! nb (first pos) (merge (writer) {:outcome (second pos) :revision (one flags :revision)
                                                             :evidence (get flags :evidence)}))
       "link" (let [[source type target] pos]

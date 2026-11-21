@@ -47,3 +47,11 @@
 
 (deftest a-broken-line-answers-with-an-error-and-the-session-goes-on
   (is (= -32700 (get-in (mcp/handle (notebook) {} "not json") [:error :code]))))
+
+(deftest data-travels-as-edn
+  (let [nb (notebook)
+        {{:strs [entry]} :value} (call nb "kajero_write" {:title "Nodes" :labels {"kind" "fact"}
+                                                          :data_edn "[{:name \"w-1\" :cpus 8}]"})]
+    (is (= "[{:name \"w-1\", :cpus 8}]" (get (:value (call nb "kajero_get" {:entry entry})) "data_edn")))
+    (is (= "bad-edn" (get-in (call nb "kajero_write" {:title "x" :labels {"kind" "fact"} :data_edn "[unclosed"})
+                             [:value "refused"])))))

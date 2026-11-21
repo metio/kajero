@@ -10,9 +10,11 @@
    human like any other. Every form carries a token minted when the server
    starts, and a request a browser marks as cross-site is refused, so another
    web page can not write into the notebook through the visitor's browser."
-  (:require [clojure.string :as str]
+  (:require [clojure.pprint :as pp]
+            [clojure.string :as str]
             [hiccup2.core :as h]
-            [kajero.core :as k])
+            [kajero.core :as k]
+            [kajero.data :as data])
   (:import (com.sun.net.httpserver HttpExchange HttpHandler HttpServer)
            (java.net InetSocketAddress URLDecoder URLEncoder)
            (java.nio.charset StandardCharsets)
@@ -119,6 +121,17 @@ details>summary{cursor:pointer;color:var(--accent)}
 background:color-mix(in srgb,var(--failed) 8%,transparent);padding:.8rem 1rem;border-radius:10px}
 .empty{color:var(--muted);font-style:italic}
 .selector{font:13px ui-monospace,Menlo,monospace;color:var(--muted)}
+.data{margin:.8rem 0;overflow-x:auto}
+table.grid-data{border-collapse:collapse;width:100%;font:13px/1.45 ui-monospace,Menlo,monospace}
+table.grid-data th{text-align:left;position:sticky;top:0;background:var(--chip);cursor:pointer;
+user-select:none;white-space:nowrap}
+table.grid-data th:after{content:' ↕';color:var(--muted);font-size:.8em}
+table.grid-data th,table.grid-data td{border-bottom:1px solid var(--rule);padding:.4rem .7rem}
+table.grid-data tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
+table.grid-data td.num{text-align:right;font-variant-numeric:tabular-nums}
+dl.data{display:grid;grid-template-columns:max-content 1fr;gap:.3rem 1rem;font-size:.92rem}
+dl.data dt{font-family:ui-monospace,Menlo,monospace;color:var(--muted)}dl.data dd{margin:0}
+.schema-note{font-size:.8rem;color:var(--muted)}
 @media (max-width:640px){h1{font-size:1.7rem}.sheet{padding:1.1rem 1rem 1.1rem 2.2rem}}
 ")
 
@@ -126,7 +139,13 @@ background:color-mix(in srgb,var(--failed) 8%,transparent);padding:.8rem 1rem;bo
   "(function(){var k='kajero-theme',r=document.documentElement;
 try{var t=localStorage.getItem(k);if(t)r.dataset.theme=t}catch(e){}
 window.kajeroTheme=function(){var d=r.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
-var n=d==='dark'?'light':'dark';r.dataset.theme=n;try{localStorage.setItem(k,n)}catch(e){}}})();")
+var n=d==='dark'?'light':'dark';r.dataset.theme=n;try{localStorage.setItem(k,n)}catch(e){}};
+document.addEventListener('click',function(ev){var th=ev.target.closest('table.grid-data th');if(!th)return;
+var t=th.closest('table'),i=[].indexOf.call(th.parentNode.children,th),b=t.tBodies[0],
+asc=th.dataset.sort!=='asc';[].forEach.call(th.parentNode.children,function(c){delete c.dataset.sort});
+th.dataset.sort=asc?'asc':'desc';var rows=[].slice.call(b.rows);rows.sort(function(x,y){
+var a=x.cells[i].dataset.v,c=y.cells[i].dataset.v,na=parseFloat(a),nc=parseFloat(c);
+var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.forEach(function(r){b.appendChild(r)})})})();")
 
 (def ^:private logo
   [:svg {:viewBox "0 0 32 32" :fill "none" :stroke "currentColor" :stroke-width "2" :aria-hidden "true"}
@@ -184,13 +203,47 @@ var n=d==='dark'?'light':'dark';r.dataset.theme=n;try{localStorage.setItem(k,n)}
             [:button.theme {:type "button" :onclick "kajeroTheme()" :aria-label "Switch between light and dark"} theme-icon]]]
           [:main content]]])))
 
-(defn- sheet [{:keys [entry title body labels at actor standing signed?] :as e} full?]
+(defn- cell-text [v]
+  (cond (keyword? v) (name v) (string? v) v (nil? v) "" :else (pr-str v)))
+
+(defn- pretty [x] (with-out-str (pp/pprint x)))
+
+(defn- schema-form [nb {:keys [schema]}]
+  (when schema (:data (k/entry nb (:entry schema)))))
+
+(defn- data-view
+  "The revision's data for a human: a sortable table for a list of maps, a
+   definition list for a map, a schema as EDN, anything else pretty-printed."
+  [nb {:keys [data labels schema] :as e}]
+  (when (contains? e :data)
+    [:div.data
+     (cond
+       (= "schema" (get labels "kind"))
+       (list [:p.schema-note "malli schema"] [:pre [:code (pretty data)]])
+
+       (data/table? data)
+       (let [cols (data/columns data (schema-form nb e))]
+         [:table.grid-data
+          [:thead [:tr (for [c cols] [:th (cell-text c)])]]
+          [:tbody (for [row data]
+                    [:tr (for [c cols :let [v (get row c)]]
+                           [:td {:class (when (number? v) "num") :data-v (cell-text v)} (cell-text v)])])]])
+
+       (map? data)
+       [:dl.data (for [[k v] data] (list [:dt (cell-text k)] [:dd (cell-text v)]))]
+
+       :else [:pre [:code (pretty data)]])
+     (when schema
+       [:p.schema-note "fits schema " [:a {:href (str "/e/" (:entry schema))}
+                                       (or (:title (k/entry nb (:entry schema))) (:entry schema))]])]))
+
+(defn- sheet [nb {:keys [entry title body labels at actor standing signed?] :as e} full?]
   [:article.sheet
    [:h3 [:a {:href (str "/e/" entry)} title]]
    (chips labels)
    (kajero.web/standing standing (if (contains? e :signed?) signed? true))
    (if full?
-     [:div.body (markdown body)]
+     (list [:div.body (markdown body)] (data-view nb e))
      (when-let [s (:summary e)] [:p.meta s]))
    [:div.meta (when actor (str actor " · ")) (when-str at)]])
 
@@ -215,7 +268,7 @@ var n=d==='dark'?'light':'dark';r.dataset.theme=n;try{localStorage.setItem(k,n)}
             [:p.empty "No pages yet. Search for a selector and save the view as a page."])
           [:h2 "Recently changed"]
           (let [recent (take 12 (k/search nb ""))]
-            (if (seq recent) (map #(sheet % false) recent) [:p.empty "The notebook is empty."]))))
+            (if (seq recent) (map #(sheet nb % false) recent) [:p.empty "The notebook is empty."]))))
 
 (defn- full-entries [nb selector]
   (map #(k/entry nb (:entry %)) (k/search nb selector)))
@@ -226,7 +279,7 @@ var n=d==='dark'?'light':'dark';r.dataset.theme=n;try{localStorage.setItem(k,n)}
             [:h1 (if (str/blank? selector) "Every entry" "View")]
             [:p.selector (or (not-empty selector) "(every entry)") " · " (count entries) " entries"]
             (if (seq entries)
-              (grouped entries group-by #(sheet % true))
+              (grouped entries group-by #(sheet nb % true))
               [:p.empty "Nothing matches."])
             [:details {:style "margin-top:2rem"}
              [:summary "Save this view as a page"]
@@ -246,7 +299,7 @@ var n=d==='dark'?'light':'dark';r.dataset.theme=n;try{localStorage.setItem(k,n)}
               [:h1 title]
               (when-not (str/blank? intro) [:div.body.lead (markdown intro)])
               [:p.selector [:a {:href (view-href selector group-by)} selector] " · " (count entries) " entries"]
-              (if (seq entries) (grouped entries group-by #(sheet % true)) [:p.empty "Nothing matches yet."])))))
+              (if (seq entries) (grouped entries group-by #(sheet nb % true)) [:p.empty "Nothing matches yet."])))))
 
 (defn- history-item [{:keys [kind actor at outcome evidence title type source target hash signed?]}]
   [:li {:class (if (= kind :observation) (str "observation-" outcome) (name kind))}
@@ -259,13 +312,14 @@ var n=d==='dark'?'light':'dark';r.dataset.theme=n;try{localStorage.setItem(k,n)}
    [:div.selector {:title hash} (subs hash 0 (min 19 (count hash)))]])
 
 (defn- entry-page [nb id token]
-  (when-let [{:keys [title body labels standing evidence links revision actor at signed?]} (k/entry nb id)]
+  (when-let [{:keys [title body labels standing evidence links revision actor at signed?] :as e} (k/entry nb id)]
     (layout {:title title}
             [:article.sheet
              [:h1 title]
              (chips labels)
              (kajero.web/standing standing signed?)
              [:div.body (markdown body)]
+             (data-view nb e)
              (when (seq evidence) [:p.meta "evidence: " (str/join "; " evidence)])
              [:p.meta actor " · " (when-str at) " · " [:span.selector revision]]
              (when (seq links)

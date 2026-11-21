@@ -9,6 +9,7 @@
    the server can not read answers as a JSON-RPC error, so the session
    survives whatever the client sends."
   (:require [cheshire.core :as json]
+            [clojure.edn :as edn]
             [kajero.core :as k]))
 
 (def ^:private entry-arg {:entry {:type "string" :description "The entry id"}})
@@ -21,12 +22,16 @@
   {:evidence {:type "array" :items {:type "string"}
               :description "What backs the record: a command and its output, a commit, a URL, a tik ticket"}})
 
+(def ^:private data-arg
+  {:data_edn {:type "string"
+              :description "Structured data as EDN, for example [{:host \"w-1\" :cpus 8}]. A list of maps shows as a table on the pages. An entry labelled kind=schema holds a malli schema here, such as [:vector [:map [:host :string] [:cpus :int]]]; label an entry schema=<that entry> to have its data checked against it."}})
+
 (def tools
   [{:name "kajero_search"
     :description "Entries a selector picks, as summaries, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, actor=name, disputed, stale, unsigned, superseded, ~text. An empty selector picks every entry."
     :inputSchema {:type "object" :properties {:selector {:type "string"}}}}
    {:name "kajero_get"
-    :description "One entry: its current revision, body, labels, evidence, standing and links."
+    :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing and links."
     :inputSchema {:type "object" :properties entry-arg :required ["entry"]}}
    {:name "kajero_history"
     :description "Every revision, observation and link of an entry, oldest first, with hashes and authors."
@@ -38,14 +43,14 @@
     :description "Write a new entry about one topic. Returns its id, warnings for labels nobody used before, and existing entries that look the same - revise one of those instead of keeping a duplicate."
     :inputSchema {:type "object"
                   :properties (merge {:title {:type "string"} :body {:type "string" :description "Markdown"}}
-                                     labels-arg evidence-arg)
+                                     labels-arg evidence-arg data-arg)
                   :required ["title" "labels"]}}
    {:name "kajero_revise"
     :description "Write a new revision of an entry. base must be its current revision; a stale base is refused with the current one, so re-read and retry. What is left out stays as it was."
     :inputSchema {:type "object"
                   :properties (merge entry-arg
                                      {:base {:type "string"} :title {:type "string"} :body {:type "string"}}
-                                     labels-arg evidence-arg)
+                                     labels-arg evidence-arg data-arg)
                   :required ["entry" "base"]}}
    {:name "kajero_observe"
     :description "Record that you checked an entry's revision (the current one by default) and found it held or failed. Base it on a fresh check, never on having read the entry. A failed observation needs evidence and disputes the revision until a new revision answers it."
@@ -63,17 +68,26 @@
                                :target {:type "string"}}
                   :required ["source" "type" "target"]}}])
 
+(defn- read-edn
+  [s]
+  (try (edn/read-string s)
+       (catch Exception e
+         (throw (ex-info (str "the data is not EDN: " (ex-message e)) {:reason :kajero/bad-edn})))))
+
 (defn call-tool
   "Runs one tool; returns the result, or throws ex-info for a refusal."
-  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision source type target]}]
+  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision source type target data_edn]}]
   (case tool
     "kajero_search" (k/search nb selector)
-    "kajero_get" (or (k/entry nb entry) (throw (ex-info (str "no entry " entry) {:reason :kajero/no-entry})))
+    "kajero_get" (let [e (or (k/entry nb entry) (throw (ex-info (str "no entry " entry) {:reason :kajero/no-entry})))]
+                   (cond-> e (contains? e :data) (assoc :data_edn (pr-str (:data e)))))
     "kajero_history" (k/history nb entry)
     "kajero_labels" (k/labels nb)
-    "kajero_write" (k/write! nb (merge writer {:title title :body body :labels labels :evidence evidence}))
+    "kajero_write" (k/write! nb (merge writer {:title title :body body :labels labels :evidence evidence}
+                                       (when data_edn {:data (read-edn data_edn)})))
     "kajero_revise" (k/revise! nb entry (merge writer {:base base :title title :body body
-                                                       :labels (not-empty labels) :evidence evidence}))
+                                                       :labels (not-empty labels) :evidence evidence}
+                                               (when data_edn {:data (read-edn data_edn)})))
     "kajero_observe" (k/observe! nb entry (merge writer {:outcome outcome :revision revision :evidence evidence}))
     "kajero_link" (k/link! nb (merge writer {:source source :type type :target target}))
     (throw (ex-info (str "unknown tool " tool) {:reason :kajero/unknown-tool}))))

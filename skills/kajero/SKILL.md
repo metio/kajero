@@ -67,6 +67,20 @@ fact to repeat.
   When one of them covers your finding, revise it and leave the new entry
   unused, or link the two.
 
+## Structured data
+
+Raw data - a list of nodes, a table of versions, a map of settings - goes in
+the entry's data as EDN (`data_edn`), with the prose that explains it in the
+body. Humans see a list of maps as a table; you read the data directly from
+`kajero_get`, which returns it as `data` and as `data_edn`.
+
+When several entries hold data of the same shape, give the shape a schema:
+write an entry labelled `kind=schema` whose data is a malli schema such as
+`[:vector [:map [:name :string] [:cpus :int]]]`, then label each data entry
+`schema=<schema entry id>`. A write whose data does not fit is refused with
+malli's errors; fix the data, or revise the schema when the shape really
+changed. Search `label:kind=schema` before inventing a new one.
+
 ## Revising
 
 `kajero_revise` needs `base`, the entry's current revision. A stale base is
