@@ -48,6 +48,20 @@ it is written, records which schema revision it fit, and orders its table
 columns by the schema. Schemas are data only: a schema that would evaluate a
 function is refused.
 
+## Reading the notebook from tools
+
+The pages answer with EDN instead of HTML when the path ends in `.edn`, for
+probes and scripts that read the same data the pages show:
+
+| Path | Returns |
+|---|---|
+| `/view.edn?selector=…` | the summaries of the entries the selector picks |
+| `/e/<id>.edn` | one entry with its data, standing, links and cited tickets |
+| `/e/<id>/history.edn` | every revision, observation and link of the entry |
+| `/labels.edn` | every label with its value counts |
+
+A selector the notebook refuses answers 400 with `{:refused … :message …}`.
+
 ## tik tickets as evidence
 
 Evidence of the form `tik:<ticket id>` cites a ticket of the tik store named
