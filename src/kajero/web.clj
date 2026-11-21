@@ -506,6 +506,9 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                         (when-let [c (:current (ex-data e))]
                           (str " - someone revised it meanwhile; the current revision is " c)))))))
 
+(defn- own-origins [port]
+  #{(str "http://127.0.0.1:" port) (str "http://localhost:" port)})
+
 (defn mcp-endpoint
   "The response to a request on /mcp, MCP's streamable HTTP transport in its
    plain request-response form: one JSON-RPC message per POST, answered with
@@ -518,7 +521,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
   [nb {:keys [token writer port]} {:keys [method origin authorization body]}]
   (when token
     (cond
-      (and origin (not (#{(str "http://127.0.0.1:" port) (str "http://localhost:" port)} origin)))
+      (and origin (not ((own-origins port) origin)))
       {:status 403 :headers {"Content-Type" "text/plain; charset=utf-8"} :body "foreign origin"}
 
       (not (and authorization
@@ -535,17 +538,47 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
         {:status 200 :headers {"Content-Type" "application/json"} :body (json/generate-string response)}
         {:status 202 :headers {"Content-Type" "application/json"} :body ""}))))
 
+(defn request-guard
+  "A refusal for a request this server must not answer, else nil.
+
+   The server listens on 127.0.0.1, but a web page can still reach it by
+   making its own host name resolve to 127.0.0.1 (DNS rebinding); the
+   browser then treats the server as that page's origin and sends the page's
+   host name. So every request must name this server as its Host, and a
+   POST to the pages must carry this server's own Origin, which browsers
+   send with every form. A process of the same local user is not stopped by
+   this: it can read the signing key itself."
+  [port {:keys [host method path origin too-large?]}]
+  (cond
+    too-large?
+    {:status 413 :headers {"Content-Type" "text/plain; charset=utf-8"} :body "the request body is too large"}
+
+    (not (contains? #{(str "127.0.0.1:" port) (str "localhost:" port)} host))
+    {:status 421 :headers {"Content-Type" "text/plain; charset=utf-8"} :body "this server answers only to its own address"}
+
+    (and (= "POST" method) (not= "/mcp" path) (not (contains? (own-origins port) origin)))
+    {:status 403 :headers {"Content-Type" "text/plain; charset=utf-8"} :body "a form must come from this server's own pages"}))
+
+(def ^:private max-body
+  "The largest request body read, in bytes; a larger one is refused before
+   it is parsed."
+  (* 16 1024 1024))
+
 (defn- exchange->request [^HttpExchange ex]
   (let [method (.getRequestMethod ex)
         uri (.getRequestURI ex)
         headers (.getRequestHeaders ex)
-        body (when (= "POST" method) (String. (.readAllBytes (.getRequestBody ex)) StandardCharsets/UTF_8))]
+        raw (when (= "POST" method) (.readNBytes (.getRequestBody ex) (inc max-body)))
+        too-large? (and raw (> (alength ^bytes raw) max-body))
+        body (when (and raw (not too-large?)) (String. ^bytes raw StandardCharsets/UTF_8))]
     {:method method
      :path (.getRawPath uri)
      :query (.getRawQuery uri)
      :origin (.getFirst headers "Origin")
+     :host (.getFirst headers "Host")
      :authorization (.getFirst headers "Authorization")
      :cross-site? (= "cross-site" (.getFirst headers "Sec-Fetch-Site"))
+     :too-large? too-large?
      :body body
      :form (some-> body params)}))
 
@@ -572,6 +605,15 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
       (throw (ex-info "KAJERO_SURFACES=mcp needs KAJERO_MCP_TOKEN_FILE" {})))
     s))
 
+(defn mcp-token
+  "The bearer token in the text of a token file. A short one is refused: the
+   token is all that stands between a local process and the MCP writer."
+  [text]
+  (let [token (str/trim (str text))]
+    (when (< (count token) 32)
+      (throw (ex-info "KAJERO_MCP_TOKEN_FILE must hold a token of at least 32 characters" {})))
+    token))
+
 (defn start!
   "Starts the server on 127.0.0.1:`port`; returns it, for `.stop`. With
    `mcp` {:token :writer}, it also serves MCP on /mcp; with `pages?`
@@ -584,10 +626,11 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                       (handle [_ ex]
                         (try
                           (send! ex (or (let [request (exchange->request ex)]
-                                          (cond
-                                            (= "/mcp" (:path request)) (mcp-endpoint nb (assoc mcp :port port) request)
-                                            (false? pages?) nil
-                                            :else (respond nb writer token request)))
+                                          (or (request-guard port request)
+                                              (cond
+                                                (= "/mcp" (:path request)) (mcp-endpoint nb (assoc mcp :port port) request)
+                                                (false? pages?) nil
+                                                :else (respond nb writer token request))))
                                         {:status 404 :body (layout {:title "Not found"} [:h1 "Not found"]
                                                                    [:p.empty "No such page or entry."])}))
                           ;; The HTTP boundary: any failure, an Error included,
@@ -611,7 +654,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
         token-file (env "KAJERO_MCP_TOKEN_FILE")
         offered (surfaces (env "KAJERO_SURFACES") (some? token-file))
         mcp (when (offered "mcp")
-              {:token (str/trim (slurp token-file))
+              {:token (mcp-token (slurp token-file))
                :writer {:actor (env "KAJERO_MCP_ACTOR") :key (env "KAJERO_MCP_KEY")}})]
     (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port mcp (contains? offered "http"))
     (println (str "kajero on http://127.0.0.1:" port ":"

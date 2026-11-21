@@ -141,3 +141,27 @@
     (k/revise! nb s1 {:base s1-rev :data [:vector [:map [:name :string] [:zone {:optional true} :string]]] :actor "claude"})
     (is (str/includes? (:body (get-page nb (str "/e/" e))) "in an older revision"))
     (is (str/includes? (:body (get-page nb (str "/e/" s1))) "(older revision)"))))
+
+(deftest requests-must-name-this-server
+  (let [ok {:host "127.0.0.1:7270" :method "GET" :path "/"}]
+    (is (nil? (web/request-guard 7270 ok)))
+    (is (nil? (web/request-guard 7270 (assoc ok :host "localhost:7270"))))
+    (is (= 421 (:status (web/request-guard 7270 (assoc ok :host "rebound.example:7270"))))
+        "a rebinding page sends its own host name")
+    (is (= 421 (:status (web/request-guard 7270 (dissoc ok :host)))))
+    (is (= 421 (:status (web/request-guard 7270 (assoc ok :host "127.0.0.1:7271")))))))
+
+(deftest forms-must-come-from-this-servers-pages
+  (let [post {:host "127.0.0.1:7270" :method "POST" :path "/new"}]
+    (is (nil? (web/request-guard 7270 (assoc post :origin "http://127.0.0.1:7270"))))
+    (is (= 403 (:status (web/request-guard 7270 post))) "a POST without an Origin is no form of ours")
+    (is (= 403 (:status (web/request-guard 7270 (assoc post :origin "http://evil.example")))))
+    (is (nil? (web/request-guard 7270 (assoc post :path "/mcp"))) "MCP clients authenticate with their token")))
+
+(deftest an-oversized-body-is-refused
+  (is (= 413 (:status (web/request-guard 7270 {:host "127.0.0.1:7270" :method "POST" :path "/mcp" :too-large? true})))))
+
+(deftest a-short-mcp-token-is-refused
+  (is (= (str/join (repeat 32 "a")) (web/mcp-token (str (str/join (repeat 32 "a")) "\n"))))
+  (is (thrown? clojure.lang.ExceptionInfo (web/mcp-token "")))
+  (is (thrown? clojure.lang.ExceptionInfo (web/mcp-token "short"))))
