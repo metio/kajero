@@ -10,6 +10,8 @@
          :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
          :extra-deps {lambdaisland/kaocha {:mvn/version "1.91.1392"}}
          :main-opts ["-m" "kaocha.runner"]}
+  :mcp {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+        :main-opts ["-m" "kajero.mcp"]}
   :run {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]
         :main-opts ["-m" "kajero.cli"]}
   :eastwood {:extra-paths ["test"]
