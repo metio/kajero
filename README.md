@@ -63,6 +63,11 @@ own is refused. Writes over MCP name `KAJERO_MCP_ACTOR` and are signed with
 `KAJERO_MCP_KEY`; the pages keep writing as `KAJERO_ACTOR`. The endpoint
 answers each JSON-RPC message with JSON and opens no event stream.
 
+`KAJERO_SURFACES` picks what the server offers: `http` for the pages and
+their EDN, `mcp` for the tools, or `http,mcp`. Without it, the server
+offers `http`, and `mcp` too when a token file is given; a surface left
+out answers 404.
+
 ## Reading the notebook from tools
 
 The pages answer with EDN instead of HTML when the path ends in `.edn`, for
