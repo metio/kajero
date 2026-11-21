@@ -1,0 +1,14 @@
+;; SPDX-FileCopyrightText: The kajero Authors
+;; SPDX-License-Identifier: 0BSD
+{:paths ["src"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.6"}
+        ;; tik.sign signs and verifies revisions with the actors' tik keys
+        io.github.metio/tik {:git/sha "8447157bce1a8d3a6f3222dbff796b887427633b"}
+        org.xerial/sqlite-jdbc {:mvn/version "3.54.1.0"}}
+ :aliases
+ {:test {:extra-paths ["test"]
+         :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+         :extra-deps {lambdaisland/kaocha {:mvn/version "1.91.1392"}}
+         :main-opts ["-m" "kaocha.runner"]}
+  :run {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+        :main-opts ["-m" "kajero.cli"]}}}

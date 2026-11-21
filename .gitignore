@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: The kajero Authors
+# SPDX-License-Identifier: 0BSD
+
+.cpcache/
+.clj-kondo/.cache/
+.lsp/
+target/
+*.db

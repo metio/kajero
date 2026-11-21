@@ -1,0 +1,9 @@
+version = 1
+SPDX-PackageName = "kajero"
+SPDX-PackageDownloadLocation = "https://github.com/metio/kajero"
+
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "The kajero Authors"
+SPDX-License-Identifier = "0BSD"

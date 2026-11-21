@@ -1,0 +1,4 @@
+;; SPDX-FileCopyrightText: The kajero Authors
+;; SPDX-License-Identifier: 0BSD
+
+{:packages ["@graalvm" "@clojure" "@lint"]}

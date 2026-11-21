@@ -1,0 +1,9 @@
+;; SPDX-FileCopyrightText: The kajero Authors
+;; SPDX-License-Identifier: 0BSD
+{:tasks
+ {test {:doc "Run the test suite (kaocha)"
+        :task (shell "clojure -M:test")}
+  lint {:doc "clj-kondo over the code base"
+        :task (shell "clj-kondo --lint src test")}
+  kajero {:doc "Run the CLI (bb kajero search 'label:kind=gotcha')"
+          :task (apply shell "clojure -M:run" *command-line-args*)}}}
