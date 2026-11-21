@@ -1,7 +1,8 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.web-test
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [kajero.core :as k]
             [kajero.web :as web])
@@ -74,3 +75,16 @@
     (is (str/includes? body "<table class=\"grid-data\">"))
     (is (re-find #"<th>name</th><th>cpus</th>" body) "columns follow the schema")
     (is (str/includes? (:body (get-page nb (str "/e/" schema))) "malli schema"))))
+
+(deftest tools-read-the-same-data-as-edn
+  (let [nb (notebook)
+        {:keys [entry]} (k/write! nb {:title "Cluster nodes" :labels {"kind" "fact"} :data [{:name "w-1"}] :actor "claude"})
+        read (fn [path & [query]] (get-page nb path query))
+        one (read (str "/e/" entry ".edn"))]
+    (is (= "application/edn; charset=utf-8" (get-in one [:headers "Content-Type"])))
+    (is (= [{:name "w-1"}] (:data (edn/read-string (:body one)))))
+    (is (= [entry] (map :entry (edn/read-string (:body (read "/view.edn" "selector=label%3Akind%3Dfact"))))))
+    (is (= {"kind" {"fact" 1}} (edn/read-string (:body (read "/labels.edn")))))
+    (is (= 1 (count (edn/read-string (:body (read (str "/e/" entry "/history.edn")))))))
+    (is (nil? (read "/e/no-such-entry.edn")))
+    (is (= 400 (:status (read "/view.edn" "selector=bogus%3D"))))))

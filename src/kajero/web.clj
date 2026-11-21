@@ -442,8 +442,30 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
 
       :else nil)))
 
+(defn- edn-response [status value]
+  {:status status
+   :headers {"Content-Type" "application/edn; charset=utf-8"}
+   :body (binding [*print-namespace-maps* false] (pr-str value))})
+
+(defn- edn-read
+  "The EDN a tool reads instead of a page: the same data the pages render,
+   for probes and scripts. nil when the path names none."
+  [nb path q]
+  (let [[_ id] (re-matches #"/e/([^/]+)\.edn" path)
+        [_ hid] (re-matches #"/e/([^/]+)/history\.edn" path)]
+    (try
+      (some->> (cond
+                 (= path "/view.edn") (k/search nb (get q "selector" ""))
+                 (= path "/labels.edn") (k/labels nb)
+                 id (k/entry nb (decode id))
+                 hid (let [h (k/history nb (decode hid))] (when (seq h) h)))
+               (edn-response 200))
+      (catch clojure.lang.ExceptionInfo e
+        (edn-response 400 {:refused (some-> (:reason (ex-data e)) name) :message (ex-message e)})))))
+
 (defn respond
-  "The response to one request: {:status :headers :body}, or nil for 404."
+  "The response to one request: {:status :headers :body}, or nil for 404.
+   A path ending in .edn answers with data instead of a page."
   [nb writer token {:keys [method path query form cross-site?]}]
   (try
     (if (= method "POST")
@@ -451,16 +473,18 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
         (problem 403 "a cross-site request can not write into the notebook")
         (post nb writer token path form))
       (let [q (params query)
-            [_ id] (re-matches #"/e/([^/]+)" path)
+            [_ id] (re-matches #"/e/([^/.]+)" path)
             [_ page-name] (re-matches #"/p/([a-z0-9-]+)" path)]
-        (some->> (cond
-                   (= path "/") (home nb)
-                   (= path "/view") (view nb q token)
-                   (= path "/labels") (labels-page nb)
-                   (= path "/new") (new-page token)
-                   id (entry-page nb (decode id) token)
-                   page-name (saved-page nb page-name))
-                 (hash-map :status 200 :body))))
+        (if (str/ends-with? path ".edn")
+          (edn-read nb path q)
+          (some->> (cond
+                     (= path "/") (home nb)
+                     (= path "/view") (view nb q token)
+                     (= path "/labels") (labels-page nb)
+                     (= path "/new") (new-page token)
+                     id (entry-page nb (decode id) token)
+                     page-name (saved-page nb page-name))
+                   (hash-map :status 200 :body)))))
     (catch clojure.lang.ExceptionInfo e
       (problem 400 (str (ex-message e)
                         (when-let [c (:current (ex-data e))]
@@ -479,7 +503,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
 (defn- send! [^HttpExchange ex {:keys [status headers body]}]
   (let [bytes (.getBytes (str body) StandardCharsets/UTF_8)
         hs (.getResponseHeaders ex)]
-    (.set hs "Content-Type" "text/html; charset=utf-8")
+    (.set hs "Content-Type" (get headers "Content-Type" "text/html; charset=utf-8"))
     (.set hs "X-Content-Type-Options" "nosniff")
     (.set hs "Content-Security-Policy" "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' https: data:; form-action 'self'; frame-ancestors 'none'")
     (doseq [[k v] headers] (.set hs k v))
