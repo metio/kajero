@@ -68,7 +68,7 @@
                                :target {:type "string"}}
                   :required ["source" "type" "target"]}}
    {:name "kajero_migrate"
-    :description "Run a migration entry (labelled kind=migration, data {:from schema :to schema :steps [...]}): every entry using the :from schema gets a new revision with converted data on the :to schema. Nothing is written when any entry fails to convert. Use dry_run first to see the result."
+    :description "Run a migration entry (labelled kind=migration, data {:from schema :to schema :steps [...]}): every entry using the :from schema gets a new revision with converted data on the :to schema. Nothing is written when any entry fails to convert or to fit the :to schema; an entry somebody revises meanwhile is reported as stale and keeps its schema. Use dry_run first to see the result."
     :inputSchema {:type "object"
                   :properties {:migration {:type "string" :description "the migration entry"}
                                :dry_run {:type "boolean"}}

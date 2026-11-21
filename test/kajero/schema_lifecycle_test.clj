@@ -153,3 +153,22 @@
     (is (= :kajero/migration-failed (refusal #(k/migrate! nb m {:actor "claude"})))
         "moving a value below a string fails for that entry")
     (is (= [{:name "a" :zone "z"}] (:data (k/entry nb a))))))
+
+(deftest no-revision-moves-onto-a-deprecated-schema
+  (let [nb (notebook)
+        {s1 :entry s1-rev :revision} (schema! nb "Nodes v1" v1)
+        {s2 :entry} (schema! nb "Nodes v2" v1)
+        {e :entry e-rev :revision} (nodes! nb s2 "nodes" [{:name "a" :cpus 1}])]
+    (k/revise! nb s1 {:base s1-rev :labels {"kind" "schema" "deprecated" "true"} :actor "seb"})
+    (is (= :kajero/deprecated-schema
+           (refusal #(k/revise! nb e {:base e-rev :labels {"kind" "fact" "schema" s1} :actor "claude"}))))
+    (is (= s2 (get-in (k/entry nb e) [:labels "schema"])))))
+
+(deftest a-migration-onto-a-deprecated-schema-is-refused
+  (let [nb (notebook)
+        {s1 :entry} (schema! nb "Nodes v1" v1)
+        {s2 :entry s2-rev :revision} (schema! nb "Nodes v2" v2)
+        {m :entry} (migration! nb s1 s2 steps)]
+    (nodes! nb s1 "a" [{:name "a" :cpus 1}])
+    (k/revise! nb s2 {:base s2-rev :labels {"kind" "schema" "deprecated" "true"} :actor "seb"})
+    (is (= :kajero/deprecated-schema (refusal #(k/migrate! nb m {:actor "claude"}))))))

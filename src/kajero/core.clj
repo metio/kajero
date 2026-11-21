@@ -227,10 +227,12 @@
   "{:ref :warnings} for a revision: :ref is {:entry :revision} of the schema
    entry its schema= label names, after checking the data against it. A
    kind=schema entry's own data must be a malli schema, and a kind=migration
-   entry's a migration between two schema entries. A new entry may not use a
-   deprecated schema; a revision of an existing one may, with a warning, so
-   old entries stay correctable until they are migrated."
-  [nb {:keys [labels] :as rec} new?]
+   entry's a migration between two schema entries. No revision may move onto
+   a deprecated schema; one that stays on the deprecated schema it already
+   uses passes with a warning, so old entries stay correctable until they
+   are migrated. `previous` is the schema the entry used before, nil for a
+   new entry."
+  [nb {:keys [labels] :as rec} previous]
   (case (get labels "kind")
     "schema" (data/schema (:data rec))
     "migration" (if-let [errors (migrate/explain (:data rec))]
@@ -242,7 +244,7 @@
   (when-let [schema-id (get labels "schema")]
     (let [schema-rev (schema-entry! nb schema-id)
           deprecated (deprecation nb schema-id schema-rev)]
-      (when (and deprecated new?)
+      (when (and deprecated (not= previous schema-id))
         (refuse! :kajero/deprecated-schema deprecated {:schema schema-id :successor (successor nb schema-id)}))
       (when-let [errors (data/explain (:data schema-rev) (:data rec))]
         (refuse! :kajero/bad-data (str "the data does not fit schema " schema-id ": " (pr-str errors))
@@ -270,7 +272,7 @@
         base-rec (cond-> {:entry id :seq 1 :base nil :title title :body (or body "") :labels labels
                           :evidence (vec evidence) :actor actor :at (str (now))}
                    (some? (:data opts)) (assoc :data (:data opts)))
-        {schema-ref :ref} (check-data! nb base-rec true)
+        {schema-ref :ref} (check-data! nb base-rec nil)
         rec (cond-> base-rec schema-ref (assoc :schema schema-ref))
         warnings (label-warnings nb labels)
         similar (similar nb rec)]
@@ -296,7 +298,7 @@
                             :evidence (vec evidence) :actor actor :at (str (now))}
                      (some? data) (assoc :data data))
           _ (check-content! base-rec)
-          {schema-ref :ref schema-warnings :warnings} (check-data! nb base-rec false)
+          {schema-ref :ref schema-warnings :warnings} (check-data! nb base-rec (get-in cur [:labels "schema"]))
           rec (cond-> base-rec schema-ref (assoc :schema schema-ref))]
       {:entry id
        ;; another writer may land the same :seq between the check above and
@@ -387,13 +389,16 @@
   "Moves every entry whose current revision uses the migration's :from
    schema onto its :to schema: a new revision per entry, with the data the
    steps produce, labelled schema=<to>, citing the migration revision as
-   evidence and checked against the new schema like any other write.
+   evidence and checked against the new schema like any other write. A
+   deprecated :to schema is refused.
 
    Every entry is converted and checked before the first write; when one
    fails, nothing is written and the refusal lists them all. With
-   :dry-run? it only reports what would happen. An entry somebody revised
-   meanwhile is reported as stale and keeps its schema, so running the
-   migration again converts what is left."
+   :dry-run? it only reports what would happen. A write can still fail
+   afterwards, most often because somebody revised the entry meanwhile;
+   that entry is reported as stale or refused, keeps its schema, and the
+   others are written, so running the migration again converts what is
+   left."
   [nb migration-id {:keys [actor key dry-run?]}]
   (check-actor! actor)
   (let [mig (or (current nb migration-id)
@@ -401,6 +406,8 @@
         _ (when-not (= "migration" (get-in mig [:labels "kind"]))
             (refuse! :kajero/no-migration (str migration-id " is not labelled kind=migration") {:entry migration-id}))
         {:keys [from to] :as spec} (:data mig)
+        _ (when-let [why (deprecation nb to (schema-entry! nb to))]
+            (refuse! :kajero/deprecated-schema (str "the migration targets a deprecated schema: " why) {:schema to}))
         evidence [(str "kajero:migration " migration-id "@" (record/hash-of mig))]
         plan (vec (for [e (entry-ids nb)
                         :let [rev (current nb e)]
@@ -408,7 +415,7 @@
                     (try
                       (let [new-data (migrate/run spec (:data rev))
                             labels (assoc (:labels rev) "schema" to)]
-                        (check-data! nb {:labels labels :data new-data} false)
+                        (check-data! nb {:labels labels :data new-data} from)
                         {:entry e :base (record/hash-of rev) :data new-data :labels labels})
                       (catch Exception ex
                         {:entry e :error (ex-message ex)}))))
@@ -429,7 +436,7 @@
                           (let [{:keys [revision]} (revise! nb entry {:base base :data data :labels labels
                                                                       :evidence evidence :actor actor :key key})]
                             {:entry entry :status :migrated :revision revision})
-                          (catch clojure.lang.ExceptionInfo ex
+                          (catch Exception ex
                             {:entry entry :status (if (= :kajero/stale-base (:reason (ex-data ex))) :stale :refused)
                              :error (ex-message ex)})))
                       plan)})))
