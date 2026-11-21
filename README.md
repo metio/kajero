@@ -33,6 +33,21 @@ when the writer has a key, signed with that actor's tik key. A notebook with
 them and marks them unsigned. Signatures are checked against an OpenSSH
 allowed-signers file (`KAJERO_ACTORS`) before anything is written.
 
+## Structured data
+
+A revision may carry data beside its body: any EDN value, written with
+`--data` on the command line or `data_edn` over MCP. Agents read the data
+itself; the pages render a list of maps as a sortable table, a map as a
+definition list, and anything else as EDN.
+
+An entry labelled `kind=schema` holds a [malli](https://github.com/metosin/malli)
+schema as its data, for example
+`[:vector [:map [:name :string] [:cpus :int]]]`. A revision labelled
+`schema=<that entry>` is checked against the schema's current revision when
+it is written, records which schema revision it fit, and orders its table
+columns by the schema. Schemas are data only: a schema that would evaluate a
+function is refused.
+
 ## Storage
 
 A notebook lives in one SQLite database (`KAJERO_DB`, default `notes.db`),

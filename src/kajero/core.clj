@@ -10,6 +10,7 @@
    signing is :optional takes them and marks them unsigned. A signature is
    checked against the actors file before anything is written."
   (:require [clojure.string :as str]
+            [kajero.data :as data]
             [kajero.record :as record]
             [kajero.select :as select]
             [kajero.standing :as standing]
@@ -81,6 +82,8 @@
      :actor (:actor rev)
      :at (:at rev)
      :evidence (:evidence rev)
+     :data (:data rev)
+     :schema (:schema rev)
      :signed? (some? (:sig rev))
      :standing (standing/derive-standing
                 rev (filter #(= (record/hash-of rev) (:revision %)) observations) (now))
@@ -94,10 +97,11 @@
   (when (current nb id) (dissoc (view nb id) :actors)))
 
 (defn- row
-  [{:keys [title body labels standing signed? superseded? actors]}]
+  [{:keys [title body labels standing signed? superseded? actors] :as v}]
   {:labels labels
    :actors actors
-   :haystack (str/lower-case (str/join " " (concat [title body] (map #(str/join "=" %) labels))))
+   :haystack (str/lower-case (str/join " " (concat [title body (some-> (:data v) pr-str)]
+                                                   (map #(str/join "=" %) labels))))
    :disputed? (:disputed? standing)
    :stale? (:stale? standing)
    :unsigned? (not signed?)
@@ -160,6 +164,23 @@
                   {:entry % :title (:title rev)})))
        vec))
 
+(defn- check-data!
+  "The schema reference a revision records: {:entry :revision} of the schema
+   entry its schema= label names, after checking the data against it. A
+   kind=schema entry's own data must be a malli schema."
+  [nb {:keys [labels] :as rec}]
+  (when (= "schema" (get labels "kind"))
+    (data/schema (:data rec)))
+  (when-let [schema-id (get labels "schema")]
+    (let [schema-rev (or (current nb schema-id)
+                         (refuse! :kajero/no-schema (str "no schema entry " schema-id) {:schema schema-id}))]
+      (when-not (= "schema" (get-in schema-rev [:labels "kind"]))
+        (refuse! :kajero/no-schema (str schema-id " is not labelled kind=schema") {:schema schema-id}))
+      (when-let [errors (data/explain (:data schema-rev) (:data rec))]
+        (refuse! :kajero/bad-data (str "the data does not fit schema " schema-id ": " (pr-str errors))
+                 {:schema schema-id :errors errors}))
+      {:entry schema-id :revision (record/hash-of schema-rev)})))
+
 (defn- check-content!
   [{:keys [title labels]}]
   (when (str/blank? title) (refuse! :kajero/no-title "an entry needs a title" {}))
@@ -172,12 +193,15 @@
 (defn write!
   "Writes a new entry. Returns its id and first revision, the warnings for
    labels nobody used before, and the entries that look similar."
-  [nb {:keys [title body labels evidence actor key]}]
+  [nb {:keys [title body labels evidence actor key] :as opts}]
   (check-actor! actor)
   (check-content! {:title title :labels labels})
   (let [id (str (random-uuid))
-        rec {:entry id :seq 1 :base nil :title title :body (or body "") :labels labels
-             :evidence (vec evidence) :actor actor :at (str (now))}
+        base-rec (cond-> {:entry id :seq 1 :base nil :title title :body (or body "") :labels labels
+                          :evidence (vec evidence) :actor actor :at (str (now))}
+                   (some? (:data opts)) (assoc :data (:data opts)))
+        schema-ref (check-data! nb base-rec)
+        rec (cond-> base-rec schema-ref (assoc :schema schema-ref))
         warnings (label-warnings nb labels)
         similar (similar nb rec)]
     {:entry id
@@ -188,17 +212,21 @@
 (defn revise!
   "Writes a new revision of an entry on top of `base`, which must be its
    current revision, so two writers can not overwrite each other unseen."
-  [nb id {:keys [base title body labels evidence actor key]}]
+  [nb id {:keys [base title body labels evidence actor key] :as opts}]
   (check-actor! actor)
   (let [cur (or (current nb id) (refuse! :kajero/no-entry (str "no entry " id) {:entry id}))
         cur-hash (record/hash-of cur)]
     (when (not= base cur-hash)
       (refuse! :kajero/stale-base "the base is not the current revision" {:entry id :current cur-hash}))
-    (let [rec {:entry id :seq (inc (:seq cur)) :base cur-hash
-               :title (or title (:title cur)) :body (or body (:body cur))
-               :labels (or labels (:labels cur))
-               :evidence (vec evidence) :actor actor :at (str (now))}]
-      (check-content! rec)
+    (let [data (if (contains? opts :data) (:data opts) (:data cur))
+          base-rec (cond-> {:entry id :seq (inc (:seq cur)) :base cur-hash
+                            :title (or title (:title cur)) :body (or body (:body cur))
+                            :labels (or labels (:labels cur))
+                            :evidence (vec evidence) :actor actor :at (str (now))}
+                     (some? data) (assoc :data data))
+          _ (check-content! base-rec)
+          schema-ref (check-data! nb base-rec)
+          rec (cond-> base-rec schema-ref (assoc :schema schema-ref))]
       {:entry id
        ;; another writer may land the same :seq between the check above and
        ;; this append; the store refuses the second one
