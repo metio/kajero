@@ -62,7 +62,9 @@ fact to repeat.
   that lists the existing ones: if the warning shows the label you meant,
   revise the entry to use it.
 - Give evidence a reader can repeat: the command and what it showed, a
-  commit, a URL, a tik ticket id.
+  commit, a URL. Cite the tik ticket you worked under as `tik:<ticket id>`;
+  the notebook checks it exists, and `ticket=<id>` later finds everything
+  learned under that ticket.
 - `kajero_write` returns `similar` entries with the same title or labels.
   When one of them covers your finding, revise it and leave the new entry
   unused, or link the two.

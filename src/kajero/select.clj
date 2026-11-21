@@ -8,6 +8,7 @@
      label:kind                 the label is present
      label:kind=gotcha          present and equal
      actor=seb                  some revision or observation by seb
+     ticket=<id>                some record cites tik:<id> as evidence
      disputed | stale | unsigned | superseded
      ~text  (or a bare word)    title, body or labels contain it
 
@@ -33,6 +34,9 @@
       (if (some? v)
         #(= v (get-in % [:labels k]))
         #(contains? (:labels %) k)))
+
+    (str/starts-with? term "ticket=")
+    (let [id (subs term 7)] #(contains? (:tickets %) id))
 
     (str/starts-with? term "actor=")
     (let [actor (subs term 6)] #(contains? (:actors %) actor))

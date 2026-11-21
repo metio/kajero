@@ -20,7 +20,7 @@
 
 (def ^:private evidence-arg
   {:evidence {:type "array" :items {:type "string"}
-              :description "What backs the record: a command and its output, a commit, a URL, a tik ticket"}})
+              :description "What backs the record: a command and its output, a commit, a URL, or tik:<ticket id> for a tik ticket, which is checked against the tik store"}})
 
 (def ^:private data-arg
   {:data_edn {:type "string"
@@ -28,10 +28,10 @@
 
 (def tools
   [{:name "kajero_search"
-    :description "Entries a selector picks, as summaries, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, actor=name, disputed, stale, unsigned, superseded, ~text. An empty selector picks every entry."
+    :description "Entries a selector picks, as summaries, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, actor=name, ticket=<tik ticket id>, disputed, stale, unsigned, superseded, ~text. An empty selector picks every entry."
     :inputSchema {:type "object" :properties {:selector {:type "string"}}}}
    {:name "kajero_get"
-    :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing and links."
+    :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing, links, and the tik tickets its records cite with their current stages."
     :inputSchema {:type "object" :properties entry-arg :required ["entry"]}}
    {:name "kajero_history"
     :description "Every revision, observation and link of an entry, oldest first, with hashes and authors."
@@ -135,7 +135,8 @@
         nb (k/notebook {:dir (env "KAJERO_DIR")
                         :path (or (env "KAJERO_DB") "notes.db")
                         :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
-                        :actors (env "KAJERO_ACTORS")})
+                        :actors (env "KAJERO_ACTORS")
+                        :tik-root (env "KAJERO_TIK_ROOT")})
         writer {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")}]
     (loop []
       (when-let [line (read-line)]

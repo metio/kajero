@@ -10,7 +10,8 @@
      KAJERO_SIGNING  required or optional (default optional)
      KAJERO_ACTORS   the allowed-signers file signatures are checked against
      KAJERO_ACTOR    the actor a write names
-     KAJERO_KEY      the private key a write is signed with"
+     KAJERO_KEY      the private key a write is signed with
+     KAJERO_TIK_ROOT the tik store whose tickets evidence cites as tik:<id>"
   (:require [clojure.edn :as edn]
             [clojure.pprint :as pp]
             [clojure.string :as str]
@@ -90,7 +91,8 @@
     (let [nb (k/notebook {:dir (env "KAJERO_DIR")
                           :path (or (env "KAJERO_DB") "notes.db")
                           :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
-                          :actors (env "KAJERO_ACTORS")})]
+                          :actors (env "KAJERO_ACTORS")
+                          :tik-root (env "KAJERO_TIK_ROOT")})]
       (pp/pprint (run-command nb args))
       (shutdown-agents))
     (catch clojure.lang.ExceptionInfo e
