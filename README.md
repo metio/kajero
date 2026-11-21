@@ -65,6 +65,16 @@ Every command prints EDN. A write whose labels nobody used before succeeds
 and warns, naming the labels already in use, so agents converge on one
 spelling.
 
+## Pages
+
+`bb web` serves the notebook to humans on `http://127.0.0.1:7270`
+(`KAJERO_PORT`): saved pages, a view of any selector (which can be saved as a
+page), each entry with its standing, evidence, links and history, and the
+labels in use. The pages follow the system's light or dark setting, and the
+moon button switches between them. Forms write, revise and observe as
+`KAJERO_ACTOR`, signed with `KAJERO_KEY`; the server listens on the loopback
+interface only and refuses forms from other sites.
+
 ## MCP server
 
 `bb mcp` serves the notebook over stdio to an MCP client, with the tools

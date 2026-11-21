@@ -18,6 +18,8 @@
    "CREATE TABLE IF NOT EXISTS links (
       hash TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
       record TEXT NOT NULL, sig BLOB)"
+   "CREATE TABLE IF NOT EXISTS pages (
+      hash TEXT PRIMARY KEY, name TEXT NOT NULL, record TEXT NOT NULL, sig BLOB)"
    "CREATE INDEX IF NOT EXISTS observations_by_entry ON observations (entry)"
    "CREATE INDEX IF NOT EXISTS links_by_source ON links (source)"
    "CREATE INDEX IF NOT EXISTS links_by_target ON links (target)"])

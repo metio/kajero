@@ -1,0 +1,451 @@
+;; SPDX-FileCopyrightText: The kajero Authors
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+(ns kajero.web
+  "The pages for humans, rendered on the server: saved pages, ad-hoc views of
+   any selector, entries with their standing and history, the labels in use,
+   and forms to write, revise and observe.
+
+   The server listens on 127.0.0.1 only and writes as KAJERO_ACTOR, signed
+   with KAJERO_KEY, so an edit made in the browser is a record of the local
+   human like any other. Every form carries a token minted when the server
+   starts, and a request a browser marks as cross-site is refused, so another
+   web page can not write into the notebook through the visitor's browser."
+  (:require [clojure.string :as str]
+            [hiccup2.core :as h]
+            [kajero.core :as k])
+  (:import (com.sun.net.httpserver HttpExchange HttpHandler HttpServer)
+           (java.net InetSocketAddress URLDecoder URLEncoder)
+           (java.nio.charset StandardCharsets)
+           (java.security SecureRandom)
+           (java.util HexFormat)
+           (org.commonmark.ext.gfm.tables TablesExtension)
+           (org.commonmark.parser Parser)
+           (org.commonmark.renderer.html HtmlRenderer)))
+
+;; --------------------------------------------------------------- markdown
+
+(def ^:private extensions [(TablesExtension/create)])
+(def ^:private ^Parser parser (.build (.extensions (Parser/builder) extensions)))
+(def ^:private ^HtmlRenderer renderer
+  (-> (HtmlRenderer/builder) (.extensions extensions) (.escapeHtml true) (.sanitizeUrls true) .build))
+
+(defn markdown
+  "Markdown as HTML; raw HTML in the source is escaped, unsafe URLs dropped."
+  [s]
+  (h/raw (.render renderer (.parse parser (or s "")))))
+
+;; ------------------------------------------------------------------ style
+
+(def ^:private css "
+:root{--paper:#f5f0e6;--card:#fffdf8;--ink:#2a2723;--muted:#6f675c;--rule:#e4dccd;
+--margin:#d9534f33;--accent:#2f5d8a;--accent-ink:#fff;--held:#2e7d4f;--failed:#b3261e;--stale:#a26a00;
+--chip:#efe7d8;--shadow:0 1px 0 #0000000d,0 8px 24px -16px #0000002e;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--paper:#121418;--card:#1a1d23;--ink:#e9e4da;
+--muted:#9a9387;--rule:#2b2f37;--margin:#e0605a40;--accent:#8fb8e8;--accent-ink:#0d1117;--held:#6cc58f;
+--failed:#ff8a80;--stale:#e3b45a;--chip:#252a33;--shadow:0 1px 0 #ffffff08,0 12px 28px -18px #000000cc;color-scheme:dark}}
+:root[data-theme=dark]{--paper:#121418;--card:#1a1d23;--ink:#e9e4da;--muted:#9a9387;--rule:#2b2f37;
+--margin:#e0605a40;--accent:#8fb8e8;--accent-ink:#0d1117;--held:#6cc58f;--failed:#ff8a80;--stale:#e3b45a;
+--chip:#252a33;--shadow:0 1px 0 #ffffff08,0 12px 28px -18px #000000cc;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+font:16px/1.6 'Iowan Old Style','Charter','Palatino Linotype',ui-serif,Georgia,serif}
+a{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:3px}
+code,pre,.mono,input,textarea,select,button{font-family:ui-monospace,'SF Mono','JetBrains Mono',Menlo,monospace}
+code{font-size:.88em;background:var(--chip);padding:.1em .35em;border-radius:4px}
+pre{background:var(--chip);padding:1rem;border-radius:8px;overflow-x:auto;font-size:.85rem}
+pre code{background:none;padding:0}
+header.top{position:sticky;top:0;z-index:5;backdrop-filter:blur(10px);
+background:color-mix(in srgb,var(--paper) 82%,transparent);border-bottom:1px solid var(--rule)}
+.bar{max-width:1080px;margin:0 auto;padding:.7rem 1rem;display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
+.brand{font-size:1.45rem;font-weight:700;letter-spacing:.01em;color:var(--ink);text-decoration:none;
+display:flex;align-items:center;gap:.45rem}
+.brand svg{width:26px;height:26px}
+nav{display:flex;gap:.9rem;font-size:.95rem}
+nav a{color:var(--muted);text-decoration:none}nav a:hover{color:var(--ink)}
+form.search{flex:1;min-width:220px;display:flex}
+form.search input{width:100%;padding:.5rem .75rem;border:1px solid var(--rule);border-radius:8px;
+background:var(--card);color:var(--ink);font-size:.85rem}
+button.theme{border:1px solid var(--rule);background:var(--card);color:var(--ink);border-radius:8px;
+padding:.35rem .5rem;cursor:pointer;line-height:0}
+button.theme svg{width:18px;height:18px}
+main{max-width:1080px;margin:0 auto;padding:1.5rem 1rem 4rem}
+h1{font-size:2.1rem;line-height:1.15;margin:.2rem 0 .6rem;font-weight:700}
+h2{font-size:1.3rem;margin:2rem 0 .7rem}
+.lead{color:var(--muted);margin-top:0}
+.grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
+.card{background:var(--card);border:1px solid var(--rule);border-radius:12px;padding:1rem 1.1rem;
+box-shadow:var(--shadow);position:relative}
+.sheet{background:var(--card);border:1px solid var(--rule);border-radius:14px;box-shadow:var(--shadow);
+padding:1.4rem 1.6rem 1.4rem 2.6rem;position:relative;
+background-image:linear-gradient(90deg,transparent 1.55rem,var(--margin) 1.55rem,var(--margin) calc(1.55rem + 2px),transparent calc(1.55rem + 2px))}
+.sheet+.sheet{margin-top:1.1rem}
+.sheet h3{margin:0 0 .3rem;font-size:1.25rem}
+.sheet h3 a{color:var(--ink);text-decoration:none}.sheet h3 a:hover{text-decoration:underline}
+.body>:first-child{margin-top:.4rem}.body table{border-collapse:collapse;margin:.6rem 0}
+.body th,.body td{border:1px solid var(--rule);padding:.3rem .6rem}
+.chips{display:flex;flex-wrap:wrap;gap:.35rem;margin:.3rem 0}
+.chip{font:12px/1.2 ui-monospace,Menlo,monospace;background:var(--chip);color:var(--ink);
+padding:.25rem .5rem;border-radius:999px;text-decoration:none;border:1px solid transparent}
+.chip:hover{border-color:var(--rule)}.chip b{color:var(--muted);font-weight:400}
+.meta{color:var(--muted);font-size:.85rem}
+.standing{display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0}
+.badge{font:12px/1 ui-monospace,Menlo,monospace;padding:.3rem .55rem;border-radius:6px;
+border:1px solid var(--rule);display:inline-flex;gap:.35rem;align-items:center}
+.badge.held{color:var(--held)}.badge.failed,.badge.disputed{color:var(--failed);border-color:color-mix(in srgb,var(--failed) 45%,transparent)}
+.badge.stale{color:var(--stale);border-color:color-mix(in srgb,var(--stale) 45%,transparent)}
+.badge.unsigned{color:var(--muted)}
+.tally{letter-spacing:.08em}
+.group{margin-top:2rem}.group>h2{font-family:ui-monospace,Menlo,monospace;font-size:.9rem;
+text-transform:uppercase;letter-spacing:.12em;color:var(--muted);border-bottom:1px solid var(--rule);padding-bottom:.4rem}
+.row{display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-start}
+.row>*{flex:1;min-width:280px}
+ol.timeline{list-style:none;padding:0;margin:0;border-left:2px solid var(--rule)}
+ol.timeline li{padding:.2rem 0 .9rem 1rem;position:relative;font-size:.92rem}
+ol.timeline li:before{content:'';position:absolute;left:-7px;top:.55rem;width:12px;height:12px;border-radius:50%;
+background:var(--card);border:2px solid var(--muted)}
+ol.timeline li.observation-held:before{border-color:var(--held)}
+ol.timeline li.observation-failed:before{border-color:var(--failed)}
+ol.timeline li.revision:before{border-color:var(--accent)}
+form.stack{display:grid;gap:.7rem}
+label.f{display:grid;gap:.25rem;font-size:.85rem;color:var(--muted)}
+.f input,.f textarea,.f select{padding:.55rem .7rem;border:1px solid var(--rule);border-radius:8px;
+background:var(--paper);color:var(--ink);font-size:.9rem}
+.f textarea{min-height:12rem;line-height:1.5}
+button.go{background:var(--accent);color:var(--accent-ink);border:0;border-radius:8px;padding:.55rem 1rem;
+font-weight:600;cursor:pointer;justify-self:start}
+button.go.failed{background:var(--failed)}button.go.held{background:var(--held)}
+details>summary{cursor:pointer;color:var(--accent)}
+.notice{border:1px solid color-mix(in srgb,var(--failed) 45%,transparent);color:var(--failed);
+background:color-mix(in srgb,var(--failed) 8%,transparent);padding:.8rem 1rem;border-radius:10px}
+.empty{color:var(--muted);font-style:italic}
+.selector{font:13px ui-monospace,Menlo,monospace;color:var(--muted)}
+@media (max-width:640px){h1{font-size:1.7rem}.sheet{padding:1.1rem 1rem 1.1rem 2.2rem}}
+")
+
+(def ^:private theme-script
+  "(function(){var k='kajero-theme',r=document.documentElement;
+try{var t=localStorage.getItem(k);if(t)r.dataset.theme=t}catch(e){}
+window.kajeroTheme=function(){var d=r.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+var n=d==='dark'?'light':'dark';r.dataset.theme=n;try{localStorage.setItem(k,n)}catch(e){}}})();")
+
+(def ^:private logo
+  [:svg {:viewBox "0 0 32 32" :fill "none" :stroke "currentColor" :stroke-width "2" :aria-hidden "true"}
+   [:rect {:x "6" :y "3" :width "20" :height "26" :rx "3"}]
+   [:path {:d "M11 3v26M15 10h7M15 15h7M15 20h4"}]])
+
+(def ^:private theme-icon
+  [:svg {:viewBox "0 0 24 24" :fill "none" :stroke "currentColor" :stroke-width "2" :aria-hidden "true"}
+   [:path {:d "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"}]])
+
+;; ---------------------------------------------------------------- helpers
+
+(defn- enc [s] (URLEncoder/encode (str s) StandardCharsets/UTF_8))
+
+(defn- view-href [selector & [group-by]]
+  (str "/view?selector=" (enc selector) (when group-by (str "&group-by=" (enc group-by)))))
+
+(defn- when-str [at] (some-> at (subs 0 (min 16 (count at))) (str/replace "T" " ")))
+
+(defn- chips [labels]
+  [:div.chips
+   (for [[key value] (sort labels)]
+     [:a.chip {:href (view-href (str "label:" key "=" value))} [:b key "="] value])])
+
+(defn- tally [n]
+  (str (str/join (repeat (quot n 5) "𝍸 ")) (str/join (repeat (mod n 5) "|"))))
+
+(defn- standing [{:keys [held failed last-held disputed? stale?]} signed?]
+  [:div.standing
+   [:span.badge.held {:title (str "independent held observations" (when last-held (str ", last " (when-str last-held))))}
+    "held " [:span.tally (if (pos? held) (tally held) "0")]]
+   (when (pos? failed) [:span.badge.failed "failed " failed])
+   (when disputed? [:span.badge.disputed "disputed"])
+   (when stale? [:span.badge.stale "stale"])
+   (when (false? signed?) [:span.badge.unsigned "unsigned"])])
+
+(defn- layout [{:keys [title selector]} & content]
+  (str "<!doctype html>"
+       (h/html
+        [:html {:lang "en"}
+         [:head
+          [:meta {:charset "utf-8"}]
+          [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+          [:title (if title (str title " · kajero") "kajero")]
+          [:style (h/raw css)]
+          [:script (h/raw theme-script)]]
+         [:body
+          [:header.top
+           [:div.bar
+            [:a.brand {:href "/"} logo "kajero"]
+            [:form.search {:action "/view" :method "get" :role "search"}
+             [:input {:name "selector" :value (or selector "") :aria-label "Selector"
+                      :placeholder "label:system=calico not disputed ~apiservices"}]]
+            [:nav [:a {:href "/"} "Pages"] [:a {:href "/labels"} "Labels"] [:a {:href "/new"} "New entry"]]
+            [:button.theme {:type "button" :onclick "kajeroTheme()" :aria-label "Switch between light and dark"} theme-icon]]]
+          [:main content]]])))
+
+(defn- sheet [{:keys [entry title body labels at actor standing signed?] :as e} full?]
+  [:article.sheet
+   [:h3 [:a {:href (str "/e/" entry)} title]]
+   (chips labels)
+   (kajero.web/standing standing (if (contains? e :signed?) signed? true))
+   (if full?
+     [:div.body (markdown body)]
+     (when-let [s (:summary e)] [:p.meta s]))
+   [:div.meta (when actor (str actor " · ")) (when-str at)]])
+
+(defn- grouped [entries group-by render]
+  (if (str/blank? group-by)
+    (map render entries)
+    (for [[value es] (sort-by #(or (key %) "~") (clojure.core/group-by #(get-in % [:labels group-by]) entries))]
+      [:section.group [:h2 group-by " = " (or value "(none)")] (map render es)])))
+
+;; ------------------------------------------------------------------ pages
+
+(defn- home [nb]
+  (layout {}
+          [:h1 "Notebook"]
+          [:p.lead "Pages are saved selectors; every entry appears wherever a selector matches it."]
+          [:h2 "Pages"]
+          (if-let [ps (seq (k/pages nb))]
+            [:div.grid (for [{:keys [name title selector intro]} ps]
+                         [:a.card {:href (str "/p/" name) :style "text-decoration:none;color:inherit"}
+                          [:strong title] [:div.selector selector]
+                          (when-not (str/blank? intro) [:p.meta (first (str/split-lines intro))])])]
+            [:p.empty "No pages yet. Search for a selector and save the view as a page."])
+          [:h2 "Recently changed"]
+          (let [recent (take 12 (k/search nb ""))]
+            (if (seq recent) (map #(sheet % false) recent) [:p.empty "The notebook is empty."]))))
+
+(defn- full-entries [nb selector]
+  (map #(k/entry nb (:entry %)) (k/search nb selector)))
+
+(defn- view [nb {:strs [selector group-by]} token]
+  (let [entries (full-entries nb selector)]
+    (layout {:title (if (str/blank? selector) "Every entry" selector) :selector selector}
+            [:h1 (if (str/blank? selector) "Every entry" "View")]
+            [:p.selector (or (not-empty selector) "(every entry)") " · " (count entries) " entries"]
+            (if (seq entries)
+              (grouped entries group-by #(sheet % true))
+              [:p.empty "Nothing matches."])
+            [:details {:style "margin-top:2rem"}
+             [:summary "Save this view as a page"]
+             [:form.stack {:method "post" :action "/pages" :style "margin-top:.8rem;max-width:520px"}
+              [:input {:type "hidden" :name "token" :value token}]
+              [:input {:type "hidden" :name "selector" :value (or selector "")}]
+              [:label.f "Name (lower-case, dashes)" [:input {:name "name" :required true :pattern "[a-z0-9][a-z0-9-]*"}]]
+              [:label.f "Title" [:input {:name "title"}]]
+              [:label.f "Group by label key" [:input {:name "group-by" :value (or group-by "") :placeholder "kind"}]]
+              [:label.f "Intro (Markdown)" [:textarea {:name "intro" :style "min-height:5rem"}]]
+              [:button.go {:type "submit"} "Save page"]]])))
+
+(defn- saved-page [nb name]
+  (when-let [{:keys [title intro selector group-by]} (k/page nb name)]
+    (let [entries (full-entries nb (str selector " not superseded"))]
+      (layout {:title title :selector selector}
+              [:h1 title]
+              (when-not (str/blank? intro) [:div.body.lead (markdown intro)])
+              [:p.selector [:a {:href (view-href selector group-by)} selector] " · " (count entries) " entries"]
+              (if (seq entries) (grouped entries group-by #(sheet % true)) [:p.empty "Nothing matches yet."])))))
+
+(defn- history-item [{:keys [kind actor at outcome evidence title type source target hash signed?]}]
+  [:li {:class (if (= kind :observation) (str "observation-" outcome) (name kind))}
+   [:div [:strong (case kind
+                    :revision (str "revised: " title)
+                    :observation (str "observed: " outcome)
+                    :link (str source " " type " " target))]]
+   [:div.meta actor " · " (when-str at) (when-not signed? " · unsigned")]
+   (when (seq evidence) [:div.meta "evidence: " (str/join "; " evidence)])
+   [:div.selector {:title hash} (subs hash 0 (min 19 (count hash)))]])
+
+(defn- entry-page [nb id token]
+  (when-let [{:keys [title body labels standing evidence links revision actor at signed?]} (k/entry nb id)]
+    (layout {:title title}
+            [:article.sheet
+             [:h1 title]
+             (chips labels)
+             (kajero.web/standing standing signed?)
+             [:div.body (markdown body)]
+             (when (seq evidence) [:p.meta "evidence: " (str/join "; " evidence)])
+             [:p.meta actor " · " (when-str at) " · " [:span.selector revision]]
+             (when (seq links)
+               [:p.meta "links: "
+                (interpose ", " (for [{:keys [source type target]} links]
+                                  [:span [:a {:href (str "/e/" source)} (if (= source id) "this" "another entry")]
+                                   " " type " "
+                                   [:a {:href (str "/e/" target)} (if (= target id) "this" "another entry")]]))])]
+            [:div.row {:style "margin-top:1.4rem"}
+             [:section.card
+              [:h2 {:style "margin-top:0"} "Observe"]
+              [:p.meta "Record a fresh check of this revision, with what you ran or read."]
+              [:form.stack {:method "post" :action (str "/e/" id "/observe")}
+               [:input {:type "hidden" :name "token" :value token}]
+               [:input {:type "hidden" :name "revision" :value revision}]
+               [:label.f "Evidence" [:input {:name "evidence" :placeholder "kubectl get apiservices | grep calico"}]]
+               [:div {:style "display:flex;gap:.6rem"}
+                [:button.go.held {:type "submit" :name "outcome" :value "held"} "It held"]
+                [:button.go.failed {:type "submit" :name "outcome" :value "failed"} "It failed"]]]]
+             [:section.card
+              [:h2 {:style "margin-top:0"} "History"]
+              [:ol.timeline (map history-item (reverse (k/history nb id)))]]]
+            [:details.card {:style "margin-top:1rem"}
+             [:summary "Revise this entry"]
+             [:form.stack {:method "post" :action (str "/e/" id "/revise") :style "margin-top:.8rem"}
+              [:input {:type "hidden" :name "token" :value token}]
+              [:input {:type "hidden" :name "base" :value revision}]
+              [:label.f "Title" [:input {:name "title" :value title}]]
+              [:label.f "Labels (key=value, one per line)"
+               [:textarea {:name "labels" :style "min-height:5rem"} (str/join "\n" (map #(str/join "=" %) (sort labels)))]]
+              [:label.f "Body (Markdown)" [:textarea {:name "body"} body]]
+              [:label.f "Evidence" [:input {:name "evidence"}]]
+              [:button.go {:type "submit"} "Save revision"]]])))
+
+(defn- labels-page [nb]
+  (layout {:title "Labels"}
+          [:h1 "Labels"]
+          [:p.lead "Every label of a current revision. Reuse these before inventing new ones."]
+          (for [[key values] (k/labels nb)]
+            [:section.group
+             [:h2 [:a {:href (view-href (str "label:" key) key)} key]]
+             [:div.chips (for [[value n] (sort-by (comp - val) values)]
+                           [:a.chip {:href (view-href (str "label:" key "=" value))} value " " [:b n]])]])))
+
+(defn- new-page [token]
+  (layout {:title "New entry"}
+          [:h1 "New entry"]
+          [:form.stack.card {:method "post" :action "/new" :style "max-width:760px"}
+           [:input {:type "hidden" :name "token" :value token}]
+           [:label.f "Title" [:input {:name "title" :required true}]]
+           [:label.f "Labels (key=value, one per line)" [:textarea {:name "labels" :style "min-height:5rem" :placeholder "kind=gotcha\nsystem=calico"}]]
+           [:label.f "Body (Markdown)" [:textarea {:name "body"}]]
+           [:label.f "Evidence" [:input {:name "evidence"}]]
+           [:button.go {:type "submit"} "Write entry"]]))
+
+(defn- problem [status message]
+  {:status status
+   :body (layout {:title "Refused"} [:h1 "Refused"] [:div.notice message] [:p [:a {:href "javascript:history.back()"} "Back"]])})
+
+;; ----------------------------------------------------------------- server
+
+(defn- decode [s] (URLDecoder/decode (str s) StandardCharsets/UTF_8))
+
+(defn- params [s]
+  (reduce (fn [m pair]
+            (let [[k v] (str/split pair #"=" 2)]
+              (if (str/blank? k) m (assoc m (decode k) (decode (or v ""))))))
+          {}
+          (str/split (or s "") #"&")))
+
+(defn- label-lines [s]
+  (not-empty (into {} (keep #(let [[k v] (map str/trim (str/split % #"=" 2))]
+                               (when-not (str/blank? k) [k (or v "")])))
+                   (str/split-lines (or s "")))))
+
+(defn- evidence [s] (if (str/blank? s) [] [(str/trim s)]))
+
+(defn- redirect [to] {:status 303 :headers {"Location" to}})
+
+(defn- post [nb writer token path form]
+  (when-not (= token (get form "token"))
+    (throw (ex-info "the form is not from this server; reload the page" {:reason :kajero/bad-token})))
+  (let [[_ id action] (re-matches #"/e/([^/]+)/(revise|observe)" path)]
+    (cond
+      (= path "/new")
+      (let [{:keys [entry]} (k/write! nb (merge writer {:title (get form "title") :body (get form "body")
+                                                        :labels (label-lines (get form "labels"))
+                                                        :evidence (evidence (get form "evidence"))}))]
+        (redirect (str "/e/" entry)))
+
+      (= path "/pages")
+      (let [{:keys [page]} (k/save-page! nb (merge writer {:name (get form "name") :title (get form "title")
+                                                           :intro (get form "intro") :selector (get form "selector")
+                                                           :group-by (get form "group-by")}))]
+        (redirect (str "/p/" page)))
+
+      (= action "revise")
+      (do (k/revise! nb id (merge writer {:base (get form "base") :title (get form "title") :body (get form "body")
+                                          :labels (label-lines (get form "labels"))
+                                          :evidence (evidence (get form "evidence"))}))
+          (redirect (str "/e/" (enc id))))
+
+      (= action "observe")
+      (do (k/observe! nb id (merge writer {:outcome (get form "outcome") :revision (get form "revision")
+                                           :evidence (evidence (get form "evidence"))}))
+          (redirect (str "/e/" (enc id))))
+
+      :else nil)))
+
+(defn respond
+  "The response to one request: {:status :headers :body}, or nil for 404."
+  [nb writer token {:keys [method path query form cross-site?]}]
+  (try
+    (if (= method "POST")
+      (if cross-site?
+        (problem 403 "a cross-site request can not write into the notebook")
+        (post nb writer token path form))
+      (let [q (params query)
+            [_ id] (re-matches #"/e/([^/]+)" path)
+            [_ page-name] (re-matches #"/p/([a-z0-9-]+)" path)]
+        (some->> (cond
+                   (= path "/") (home nb)
+                   (= path "/view") (view nb q token)
+                   (= path "/labels") (labels-page nb)
+                   (= path "/new") (new-page token)
+                   id (entry-page nb (decode id) token)
+                   page-name (saved-page nb page-name))
+                 (hash-map :status 200 :body))))
+    (catch clojure.lang.ExceptionInfo e
+      (problem 400 (str (ex-message e)
+                        (when-let [c (:current (ex-data e))]
+                          (str " - someone revised it meanwhile; the current revision is " c)))))))
+
+(defn- exchange->request [^HttpExchange ex]
+  (let [method (.getRequestMethod ex)
+        uri (.getRequestURI ex)]
+    {:method method
+     :path (.getRawPath uri)
+     :query (.getRawQuery uri)
+     :cross-site? (= "cross-site" (.getFirst (.getRequestHeaders ex) "Sec-Fetch-Site"))
+     :form (when (= "POST" method)
+             (params (String. (.readAllBytes (.getRequestBody ex)) StandardCharsets/UTF_8)))}))
+
+(defn- send! [^HttpExchange ex {:keys [status headers body]}]
+  (let [bytes (.getBytes (str body) StandardCharsets/UTF_8)
+        hs (.getResponseHeaders ex)]
+    (.set hs "Content-Type" "text/html; charset=utf-8")
+    (.set hs "X-Content-Type-Options" "nosniff")
+    (.set hs "Content-Security-Policy" "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' https: data:; form-action 'self'; frame-ancestors 'none'")
+    (doseq [[k v] headers] (.set hs k v))
+    (.sendResponseHeaders ex status (if (empty? bytes) -1 (alength bytes)))
+    (with-open [out (.getResponseBody ex)] (.write out bytes))))
+
+(defn start!
+  "Starts the server on 127.0.0.1:`port`; returns it, for `.stop`."
+  ^HttpServer [nb writer port]
+  (let [token (.formatHex (HexFormat/of) (let [b (byte-array 24)] (.nextBytes (SecureRandom.) b) b))
+        server (HttpServer/create (InetSocketAddress. "127.0.0.1" (int port)) 0)]
+    (.createContext server "/"
+                    (reify HttpHandler
+                      (handle [_ ex]
+                        (try
+                          (send! ex (or (respond nb writer token (exchange->request ex))
+                                        {:status 404 :body (layout {:title "Not found"} [:h1 "Not found"]
+                                                                   [:p.empty "No such page or entry."])}))
+                          ;; The HTTP boundary: any failure, an Error included,
+                          ;; answers 500 instead of leaving the exchange open.
+                          #_{:splint/disable [lint/catch-throwable]}
+                          (catch Throwable t
+                            (send! ex {:status 500 :body (str "internal error: " (ex-message t))}))
+                          (finally (.close ex))))))
+    (.start server)
+    server))
+
+(defn -main
+  [& _]
+  (let [env #(not-empty (System/getenv %))
+        port (Long/parseLong (or (env "KAJERO_PORT") "7270"))
+        nb (k/notebook {:path (or (env "KAJERO_DB") "notes.db")
+                        :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
+                        :actors (env "KAJERO_ACTORS")})]
+    (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port)
+    (println (str "kajero on http://127.0.0.1:" port))))
