@@ -65,6 +65,24 @@ Every command prints EDN. A write whose labels nobody used before succeeds
 and warns, naming the labels already in use, so agents converge on one
 spelling.
 
+## MCP server
+
+`bb mcp` serves the notebook over stdio to an MCP client, with the tools
+`kajero_search`, `kajero_get`, `kajero_history`, `kajero_labels`,
+`kajero_write`, `kajero_revise`, `kajero_observe` and `kajero_link`. It reads
+the same environment as the command line; every write names `KAJERO_ACTOR`
+and is signed with `KAJERO_KEY` when it is set.
+
+```sh
+claude mcp add kajero -e KAJERO_DB=$HOME/notes.db -e KAJERO_ACTOR=claude -- sh -c 'cd /path/to/kajero && exec clojure -M:mcp'
+```
+
+## Claude skill
+
+`skills/kajero` teaches an agent when to search the notebook, how to write
+and revise entries, and when an observation is evidence. Link it into
+`~/.claude/skills/kajero`.
+
 ## Development
 
 The toolchain comes from breto: `eval "$(breto env)"`, then `bb test` and
