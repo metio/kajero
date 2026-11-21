@@ -545,10 +545,24 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
     (.sendResponseHeaders ex status (if (empty? bytes) -1 (alength bytes)))
     (with-open [out (.getResponseBody ex)] (.write out bytes))))
 
+(defn surfaces
+  "What a server offers: the names in `given` (comma-separated http and
+   mcp), else http, plus mcp when MCP has a token."
+  [given token?]
+  (let [s (if (str/blank? given)
+            (cond-> #{"http"} token? (conj "mcp"))
+            (set (map str/trim (str/split given #","))))]
+    (when-let [unknown (seq (remove #{"http" "mcp"} s))]
+      (throw (ex-info (str "KAJERO_SURFACES knows http and mcp, not " (str/join "," unknown)) {})))
+    (when (and (s "mcp") (not token?))
+      (throw (ex-info "KAJERO_SURFACES=mcp needs KAJERO_MCP_TOKEN_FILE" {})))
+    s))
+
 (defn start!
   "Starts the server on 127.0.0.1:`port`; returns it, for `.stop`. With
-   `mcp` {:token :writer}, it also serves MCP on /mcp."
-  ^HttpServer [nb writer port & [mcp]]
+   `mcp` {:token :writer}, it also serves MCP on /mcp; with `pages?`
+   false, it serves nothing but that."
+  ^HttpServer [nb writer port & [mcp pages?]]
   (let [token (.formatHex (HexFormat/of) (let [b (byte-array 24)] (.nextBytes (SecureRandom.) b) b))
         server (HttpServer/create (InetSocketAddress. "127.0.0.1" (int port)) 0)]
     (.createContext server "/"
@@ -556,9 +570,10 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                       (handle [_ ex]
                         (try
                           (send! ex (or (let [request (exchange->request ex)]
-                                          (if (= "/mcp" (:path request))
-                                            (mcp-endpoint nb (assoc mcp :port port) request)
-                                            (respond nb writer token request)))
+                                          (cond
+                                            (= "/mcp" (:path request)) (mcp-endpoint nb (assoc mcp :port port) request)
+                                            (false? pages?) nil
+                                            :else (respond nb writer token request)))
                                         {:status 404 :body (layout {:title "Not found"} [:h1 "Not found"]
                                                                    [:p.empty "No such page or entry."])}))
                           ;; The HTTP boundary: any failure, an Error included,
@@ -578,10 +593,14 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                         :path (or (env "KAJERO_DB") "notes.db")
                         :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
                         :actors (env "KAJERO_ACTORS")
-                        :tik-root (env "KAJERO_TIK_ROOT")})]
-    (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port
-            (when-let [f (env "KAJERO_MCP_TOKEN_FILE")]
-              {:token (str/trim (slurp f))
-               :writer {:actor (env "KAJERO_MCP_ACTOR") :key (env "KAJERO_MCP_KEY")}}))
-    (println (str "kajero on http://127.0.0.1:" port
-                  (when (env "KAJERO_MCP_TOKEN_FILE") (str ", MCP on http://127.0.0.1:" port "/mcp"))))))
+                        :tik-root (env "KAJERO_TIK_ROOT")})
+        token-file (env "KAJERO_MCP_TOKEN_FILE")
+        offered (surfaces (env "KAJERO_SURFACES") (some? token-file))
+        mcp (when (offered "mcp")
+              {:token (str/trim (slurp token-file))
+               :writer {:actor (env "KAJERO_MCP_ACTOR") :key (env "KAJERO_MCP_KEY")}})]
+    (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port mcp (contains? offered "http"))
+    (println (str "kajero on http://127.0.0.1:" port ":"
+                  (when (offered "http") " pages")
+                  (when (= 2 (count offered)) " and")
+                  (when mcp " MCP on /mcp")))))

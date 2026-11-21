@@ -116,3 +116,11 @@
     (is (= 405 (:status (mcp-call nb {:method "GET"}))))
     (is (nil? (web/mcp-endpoint nb {:writer {:actor "claude"} :port 7270} {:method "POST" :body body}))
         "without a token there is no MCP endpoint")))
+
+(deftest surfaces-are-chosen-explicitly-or-follow-the-token
+  (is (= #{"http"} (web/surfaces nil false)))
+  (is (= #{"http" "mcp"} (web/surfaces nil true)))
+  (is (= #{"mcp"} (web/surfaces "mcp" true)))
+  (is (= #{"http"} (web/surfaces "http" true)))
+  (is (thrown? clojure.lang.ExceptionInfo (web/surfaces "mcp" false)))
+  (is (thrown? clojure.lang.ExceptionInfo (web/surfaces "web" true))))
