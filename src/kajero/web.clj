@@ -444,7 +444,8 @@ var n=d==='dark'?'light':'dark';r.dataset.theme=n;try{localStorage.setItem(k,n)}
   [& _]
   (let [env #(not-empty (System/getenv %))
         port (Long/parseLong (or (env "KAJERO_PORT") "7270"))
-        nb (k/notebook {:path (or (env "KAJERO_DB") "notes.db")
+        nb (k/notebook {:dir (env "KAJERO_DIR")
+                        :path (or (env "KAJERO_DB") "notes.db")
                         :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
                         :actors (env "KAJERO_ACTORS")})]
     (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port)

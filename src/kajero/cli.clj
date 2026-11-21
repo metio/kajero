@@ -5,7 +5,8 @@
    reason on stderr and exits 1.
 
    The environment names the notebook and the writer:
-     KAJERO_DB       the database file (default notes.db)
+     KAJERO_DIR      a directory of flat files, for local testing
+     KAJERO_DB       the database file, when KAJERO_DIR is unset (default notes.db)
      KAJERO_SIGNING  required or optional (default optional)
      KAJERO_ACTORS   the allowed-signers file signatures are checked against
      KAJERO_ACTOR    the actor a write names
@@ -73,7 +74,8 @@
 (defn -main
   [& args]
   (try
-    (let [nb (k/notebook {:path (or (env "KAJERO_DB") "notes.db")
+    (let [nb (k/notebook {:dir (env "KAJERO_DIR")
+                          :path (or (env "KAJERO_DB") "notes.db")
                           :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
                           :actors (env "KAJERO_ACTORS")})]
       (pp/pprint (run-command nb args))

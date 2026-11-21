@@ -33,6 +33,24 @@ when the writer has a key, signed with that actor's tik key. A notebook with
 them and marks them unsigned. Signatures are checked against an OpenSSH
 allowed-signers file (`KAJERO_ACTORS`) before anything is written.
 
+## Storage
+
+A notebook lives in one SQLite database (`KAJERO_DB`, default `notes.db`),
+or, for local testing, in a directory of flat files (`KAJERO_DIR`):
+
+```
+notes/entries/<entry>/revisions/00000001.edn
+notes/entries/<entry>/observations/<hash>.edn
+notes/links/<hash>.edn
+notes/pages/<hash>.edn
+```
+
+Each file holds one record as EDN, with its signature beside it in a `.sig`
+file, so a flat-file notebook can be read, diffed and grepped without kajero.
+Both stores create files and rows once and never change them. Two writers
+landing a revision with the same number are told apart by the store itself,
+and the second is refused.
+
 ## Selectors
 
 Selectors use the grammar of tik's `--where`: whitespace-separated terms, all
