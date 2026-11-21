@@ -55,3 +55,15 @@
     (is (= "[{:name \"w-1\", :cpus 8}]" (get (:value (call nb "kajero_get" {:entry entry})) "data_edn")))
     (is (= "bad-edn" (get-in (call nb "kajero_write" {:title "x" :labels {"kind" "fact"} :data_edn "[unclosed"})
                              [:value "refused"])))))
+
+(deftest migrations-run-over-mcp
+  (let [nb (notebook)
+        write (fn [args] (get-in (call nb "kajero_write" args) [:value "entry"]))
+        s1 (write {:title "v1" :labels {"kind" "schema"} :data_edn "[:vector [:map [:name :string]]]"})
+        s2 (write {:title "v2" :labels {"kind" "schema"} :data_edn "[:vector [:map [:host :string]]]"})
+        e (write {:title "nodes" :labels {"kind" "fact" "schema" s1} :data_edn "[{:name \"w-1\"}]"})
+        m (write {:title "v1 to v2" :labels {"kind" "migration"}
+                  :data_edn (pr-str {:from s1 :to s2 :steps [[:rename :name :host]]})})]
+    (is (= [e] (map #(get % "entry") (get-in (call nb "kajero_get" {:entry s1}) [:value "used_by"]))))
+    (is (= "[{:host \"w-1\"}]" (do (call nb "kajero_migrate" {:migration m})
+                                   (get-in (call nb "kajero_get" {:entry e}) [:value "data_edn"]))))))

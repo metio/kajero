@@ -28,10 +28,10 @@
 
 (def tools
   [{:name "kajero_search"
-    :description "Entries a selector picks, as summaries, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, actor=name, ticket=<tik ticket id>, disputed, stale, unsigned, superseded, ~text. An empty selector picks every entry."
+    :description "Entries a selector picks, as summaries, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, actor=name, ticket=<tik ticket id>, schema-revision=<hash>, outdated-schema, disputed, stale, unsigned, superseded, ~text. An empty selector picks every entry."
     :inputSchema {:type "object" :properties {:selector {:type "string"}}}}
    {:name "kajero_get"
-    :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing, links, and the tik tickets its records cite with their current stages."
+    :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing, links, and the tik tickets its records cite with their current stages. A schema entry also lists the entries using it (used_by)."
     :inputSchema {:type "object" :properties entry-arg :required ["entry"]}}
    {:name "kajero_history"
     :description "Every revision, observation and link of an entry, oldest first, with hashes and authors."
@@ -66,7 +66,13 @@
                   :properties {:source {:type "string"}
                                :type {:type "string" :enum ["supersedes" "contradicts" "see-also"]}
                                :target {:type "string"}}
-                  :required ["source" "type" "target"]}}])
+                  :required ["source" "type" "target"]}}
+   {:name "kajero_migrate"
+    :description "Run a migration entry (labelled kind=migration, data {:from schema :to schema :steps [...]}): every entry using the :from schema gets a new revision with converted data on the :to schema. Nothing is written when any entry fails to convert. Use dry_run first to see the result."
+    :inputSchema {:type "object"
+                  :properties {:migration {:type "string" :description "the migration entry"}
+                               :dry_run {:type "boolean"}}
+                  :required ["migration"]}}])
 
 (defn- read-edn
   [s]
@@ -76,11 +82,13 @@
 
 (defn call-tool
   "Runs one tool; returns the result, or throws ex-info for a refusal."
-  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision source type target data_edn]}]
+  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision source type target data_edn migration dry_run]}]
   (case tool
     "kajero_search" (k/search nb selector)
     "kajero_get" (let [e (or (k/entry nb entry) (throw (ex-info (str "no entry " entry) {:reason :kajero/no-entry})))]
-                   (cond-> e (contains? e :data) (assoc :data_edn (pr-str (:data e)))))
+                   (cond-> e
+                     (contains? e :data) (assoc :data_edn (pr-str (:data e)))
+                     (contains? e :used-by) (-> (assoc :used_by (:used-by e)) (dissoc :used-by))))
     "kajero_history" (k/history nb entry)
     "kajero_labels" (k/labels nb)
     "kajero_write" (k/write! nb (merge writer {:title title :body body :labels labels :evidence evidence}
@@ -90,6 +98,7 @@
                                                (when data_edn {:data (read-edn data_edn)})))
     "kajero_observe" (k/observe! nb entry (merge writer {:outcome outcome :revision revision :evidence evidence}))
     "kajero_link" (k/link! nb (merge writer {:source source :type type :target target}))
+    "kajero_migrate" (k/migrate! nb migration (assoc writer :dry-run? (true? dry_run)))
     (throw (ex-info (str "unknown tool " tool) {:reason :kajero/unknown-tool}))))
 
 (defn- refusal-text

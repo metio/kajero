@@ -124,3 +124,20 @@
   (is (= #{"http"} (web/surfaces "http" true)))
   (is (thrown? clojure.lang.ExceptionInfo (web/surfaces "mcp" false)))
   (is (thrown? clojure.lang.ExceptionInfo (web/surfaces "web" true))))
+
+(deftest schema-pages-show-their-users-and-migrations-their-schemas
+  (let [nb (notebook)
+        {s1 :entry s1-rev :revision} (k/write! nb {:title "Nodes v1" :labels {"kind" "schema"}
+                                                   :data [:vector [:map [:name :string]]] :actor "claude"})
+        {s2 :entry} (k/write! nb {:title "Nodes v2" :labels {"kind" "schema"}
+                                  :data [:vector [:map [:host :string]]] :actor "claude"})
+        {e :entry} (k/write! nb {:title "staging nodes" :labels {"kind" "fact" "schema" s1}
+                                 :data [{:name "w-1"}] :actor "claude"})
+        {m :entry} (k/write! nb {:title "v1 to v2" :labels {"kind" "migration"}
+                                 :data {:from s1 :to s2 :steps [[:rename :name :host]]} :actor "claude"})]
+    (is (str/includes? (:body (get-page nb (str "/e/" s1))) "used by 1 entry"))
+    (is (str/includes? (:body (get-page nb (str "/e/" m))) "migration from"))
+    (is (str/includes? (:body (get-page nb (str "/e/" m))) "Nodes v2"))
+    (k/revise! nb s1 {:base s1-rev :data [:vector [:map [:name :string] [:zone {:optional true} :string]]] :actor "claude"})
+    (is (str/includes? (:body (get-page nb (str "/e/" e))) "in an older revision"))
+    (is (str/includes? (:body (get-page nb (str "/e/" s1))) "(older revision)"))))
