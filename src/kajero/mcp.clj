@@ -98,6 +98,11 @@
     (json/generate-string (cond-> {:refused (some-> reason name) :message (ex-message e)}
                             current (assoc :current current)))))
 
+(def ^:private protocol-versions
+  "The MCP revisions this server speaks; it answers an initialize in the
+   client's revision when it is one of them, else in the newest."
+  ["2025-06-18" "2025-03-26" "2024-11-05"])
+
 (defn handle
   "The response to one request line, or nil for a notification."
   [nb writer line]
@@ -108,7 +113,8 @@
             respond (fn [result] {:jsonrpc "2.0" :id id :result result})]
         (try
           (case method
-            "initialize" (respond {:protocolVersion "2024-11-05"
+            "initialize" (respond {:protocolVersion (let [asked (get params "protocolVersion")]
+                                                      (if (some #{asked} protocol-versions) asked (first protocol-versions)))
                                    :capabilities {:tools {}}
                                    :serverInfo {:name "kajero" :version "1"}})
             "tools/list" (respond {:tools tools})

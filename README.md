@@ -48,6 +48,21 @@ it is written, records which schema revision it fit, and orders its table
 columns by the schema. Schemas are data only: a schema that would evaluate a
 function is refused.
 
+## MCP over HTTP
+
+With `KAJERO_MCP_TOKEN_FILE` set, the page server also speaks MCP on `/mcp`,
+so one long-running service serves every client:
+
+```sh
+claude mcp add --scope user --transport http kajero http://127.0.0.1:7270/mcp \
+  --header "Authorization: Bearer $(cat /path/to/mcp-token)"
+```
+
+A request needs that bearer token, and one whose `Origin` is not the server's
+own is refused. Writes over MCP name `KAJERO_MCP_ACTOR` and are signed with
+`KAJERO_MCP_KEY`; the pages keep writing as `KAJERO_ACTOR`. The endpoint
+answers each JSON-RPC message with JSON and opens no event stream.
+
 ## Reading the notebook from tools
 
 The pages answer with EDN instead of HTML when the path ends in `.edn`, for

@@ -88,3 +88,31 @@
     (is (= 1 (count (edn/read-string (:body (read (str "/e/" entry "/history.edn")))))))
     (is (nil? (read "/e/no-such-entry.edn")))
     (is (= 400 (:status (read "/view.edn" "selector=bogus%3D"))))))
+
+(def ^:private mcp-config {:token "s3cret" :writer {:actor "claude"} :port 7270})
+
+(defn- mcp-call [nb request]
+  (web/mcp-endpoint nb mcp-config (merge {:method "POST" :authorization "Bearer s3cret"} request)))
+
+(deftest mcp-over-http-writes-as-the-mcp-writer
+  (let [nb (notebook)
+        init (mcp-call nb {:body "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}"})
+        write (mcp-call nb {:body (str "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":"
+                                       "{\"name\":\"kajero_write\",\"arguments\":{\"title\":\"t\",\"labels\":{\"kind\":\"fact\"}}}}")})]
+    (is (= 200 (:status init)))
+    (is (str/includes? (:body init) "2025-06-18") "answers in the client's revision")
+    (is (= 200 (:status write)))
+    (is (= ["claude"] (map #(:actor (k/entry nb (:entry %))) (k/search nb "label:kind=fact")))
+        "the pages' writer is seb; MCP writes are claude's")
+    (is (= 202 (:status (mcp-call nb {:body "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"}))))))
+
+(deftest mcp-over-http-is-guarded
+  (let [nb (notebook)
+        body "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"]
+    (is (= 401 (:status (mcp-call nb {:body body :authorization nil}))))
+    (is (= 401 (:status (mcp-call nb {:body body :authorization "Bearer wrong"}))))
+    (is (= 403 (:status (mcp-call nb {:body body :origin "http://evil.example"}))))
+    (is (= 200 (:status (mcp-call nb {:body body :origin "http://127.0.0.1:7270"}))))
+    (is (= 405 (:status (mcp-call nb {:method "GET"}))))
+    (is (nil? (web/mcp-endpoint nb {:writer {:actor "claude"} :port 7270} {:method "POST" :body body}))
+        "without a token there is no MCP endpoint")))

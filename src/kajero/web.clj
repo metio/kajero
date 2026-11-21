@@ -10,15 +10,17 @@
    human like any other. Every form carries a token minted when the server
    starts, and a request a browser marks as cross-site is refused, so another
    web page can not write into the notebook through the visitor's browser."
-  (:require [clojure.pprint :as pp]
+  (:require [cheshire.core :as json]
+            [clojure.pprint :as pp]
             [clojure.string :as str]
             [hiccup2.core :as h]
             [kajero.core :as k]
-            [kajero.data :as data])
+            [kajero.data :as data]
+            [kajero.mcp :as mcp])
   (:import (com.sun.net.httpserver HttpExchange HttpHandler HttpServer)
            (java.net InetSocketAddress URLDecoder URLEncoder)
            (java.nio.charset StandardCharsets)
-           (java.security SecureRandom)
+           (java.security MessageDigest SecureRandom)
            (java.util HexFormat)
            (org.commonmark.ext.gfm.tables TablesExtension)
            (org.commonmark.parser Parser)
@@ -490,15 +492,48 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                         (when-let [c (:current (ex-data e))]
                           (str " - someone revised it meanwhile; the current revision is " c)))))))
 
+(defn mcp-endpoint
+  "The response to a request on /mcp, MCP's streamable HTTP transport in its
+   plain request-response form: one JSON-RPC message per POST, answered with
+   JSON, and no server-sent events. nil (404) unless `mcp` names a token.
+
+   Anything on this machine can reach 127.0.0.1, so a request needs the
+   bearer token, and one carrying an Origin other than this server's own is
+   refused, which keeps a web page from driving it through DNS rebinding.
+   Writes are made as the MCP writer, never as the writer of the pages."
+  [nb {:keys [token writer port]} {:keys [method origin authorization body]}]
+  (when token
+    (cond
+      (and origin (not (#{(str "http://127.0.0.1:" port) (str "http://localhost:" port)} origin)))
+      {:status 403 :headers {"Content-Type" "text/plain; charset=utf-8"} :body "foreign origin"}
+
+      (not (and authorization
+                (MessageDigest/isEqual (.getBytes ^String authorization StandardCharsets/UTF_8)
+                                       (.getBytes (str "Bearer " token) StandardCharsets/UTF_8))))
+      {:status 401 :headers {"Content-Type" "text/plain; charset=utf-8" "WWW-Authenticate" "Bearer"}
+       :body "a bearer token is required"}
+
+      (not= "POST" method)
+      {:status 405 :headers {"Content-Type" "text/plain; charset=utf-8" "Allow" "POST"} :body ""}
+
+      :else
+      (if-let [response (mcp/handle nb writer body)]
+        {:status 200 :headers {"Content-Type" "application/json"} :body (json/generate-string response)}
+        {:status 202 :headers {"Content-Type" "application/json"} :body ""}))))
+
 (defn- exchange->request [^HttpExchange ex]
   (let [method (.getRequestMethod ex)
-        uri (.getRequestURI ex)]
+        uri (.getRequestURI ex)
+        headers (.getRequestHeaders ex)
+        body (when (= "POST" method) (String. (.readAllBytes (.getRequestBody ex)) StandardCharsets/UTF_8))]
     {:method method
      :path (.getRawPath uri)
      :query (.getRawQuery uri)
-     :cross-site? (= "cross-site" (.getFirst (.getRequestHeaders ex) "Sec-Fetch-Site"))
-     :form (when (= "POST" method)
-             (params (String. (.readAllBytes (.getRequestBody ex)) StandardCharsets/UTF_8)))}))
+     :origin (.getFirst headers "Origin")
+     :authorization (.getFirst headers "Authorization")
+     :cross-site? (= "cross-site" (.getFirst headers "Sec-Fetch-Site"))
+     :body body
+     :form (some-> body params)}))
 
 (defn- send! [^HttpExchange ex {:keys [status headers body]}]
   (let [bytes (.getBytes (str body) StandardCharsets/UTF_8)
@@ -511,15 +546,19 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
     (with-open [out (.getResponseBody ex)] (.write out bytes))))
 
 (defn start!
-  "Starts the server on 127.0.0.1:`port`; returns it, for `.stop`."
-  ^HttpServer [nb writer port]
+  "Starts the server on 127.0.0.1:`port`; returns it, for `.stop`. With
+   `mcp` {:token :writer}, it also serves MCP on /mcp."
+  ^HttpServer [nb writer port & [mcp]]
   (let [token (.formatHex (HexFormat/of) (let [b (byte-array 24)] (.nextBytes (SecureRandom.) b) b))
         server (HttpServer/create (InetSocketAddress. "127.0.0.1" (int port)) 0)]
     (.createContext server "/"
                     (reify HttpHandler
                       (handle [_ ex]
                         (try
-                          (send! ex (or (respond nb writer token (exchange->request ex))
+                          (send! ex (or (let [request (exchange->request ex)]
+                                          (if (= "/mcp" (:path request))
+                                            (mcp-endpoint nb (assoc mcp :port port) request)
+                                            (respond nb writer token request)))
                                         {:status 404 :body (layout {:title "Not found"} [:h1 "Not found"]
                                                                    [:p.empty "No such page or entry."])}))
                           ;; The HTTP boundary: any failure, an Error included,
@@ -540,5 +579,9 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                         :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
                         :actors (env "KAJERO_ACTORS")
                         :tik-root (env "KAJERO_TIK_ROOT")})]
-    (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port)
-    (println (str "kajero on http://127.0.0.1:" port))))
+    (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port
+            (when-let [f (env "KAJERO_MCP_TOKEN_FILE")]
+              {:token (str/trim (slurp f))
+               :writer {:actor (env "KAJERO_MCP_ACTOR") :key (env "KAJERO_MCP_KEY")}}))
+    (println (str "kajero on http://127.0.0.1:" port
+                  (when (env "KAJERO_MCP_TOKEN_FILE") (str ", MCP on http://127.0.0.1:" port "/mcp"))))))
