@@ -255,3 +255,35 @@
     (store/execute! conn "INSERT INTO links (hash, source, target, record, sig) VALUES (?, ?, ?, ?, ?)"
                     hash source target (pr-str rec) sig)
     {:link hash}))
+
+;; ------------------------------------------------------------------ pages
+
+(defn save-page!
+  "Saves a page: a named selector, with an optional title, intro, order and
+   grouping label key. Saving a name again writes a new version; the newest
+   one is the page."
+  [{:keys [conn] :as nb} {:keys [name title intro selector group-by actor key]}]
+  (check-actor! actor)
+  (when-not (re-matches #"[a-z0-9][a-z0-9-]*" (str name))
+    (refuse! :kajero/bad-page-name "a page name is lower-case letters, digits and dashes" {:name name}))
+  (select/compile selector)
+  (let [rec {:name name :title (or (not-empty title) name) :intro (or intro "") :selector (or selector "")
+             :group-by (not-empty group-by) :actor actor :at (str (now))}
+        sig (seal nb rec key)
+        hash (record/hash-of rec)]
+    (store/execute! conn "INSERT INTO pages (hash, name, record, sig) VALUES (?, ?, ?, ?)" hash name (pr-str rec) sig)
+    {:page name :version hash}))
+
+(defn pages
+  "The newest version of every page, by name."
+  [{:keys [conn]}]
+  (->> (store/query conn "SELECT record, sig FROM pages")
+       (map store/read-record)
+       (group-by :name)
+       (map (fn [[_ versions]] (last (sort-by :at versions))))
+       (sort-by :name)
+       vec))
+
+(defn page
+  [nb name]
+  (some #(when (= name (:name %)) %) (pages nb)))

@@ -5,6 +5,8 @@
         :task (shell "clojure -M:test")}
   lint {:doc "clj-kondo over the code base"
         :task (shell "clj-kondo --lint src test")}
+  web {:doc "The pages for humans on http://127.0.0.1:7270 (KAJERO_PORT)"
+       :task (shell "clojure -M:web")}
   mcp {:doc "MCP server over stdio (KAJERO_DB, KAJERO_ACTOR, KAJERO_KEY)"
        :task (shell "clojure -M:mcp")}
   kajero {:doc "Run the CLI (bb kajero search 'label:kind=gotcha')"
