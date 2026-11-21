@@ -3,8 +3,9 @@
 (ns kajero.core-test
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
-            [clojure.test :refer [deftest is testing]]
-            [kajero.core :as k])
+            [clojure.test :refer [deftest is testing use-fixtures]]
+            [kajero.core :as k]
+            [kajero.store :as store])
   (:import (java.nio.file Files)
            (java.nio.file.attribute FileAttribute)
            (java.time Instant)))
@@ -12,9 +13,18 @@
 (defn- temp-dir []
   (str (Files/createTempDirectory "kajero" (make-array FileAttribute 0))))
 
+(def ^:private ^:dynamic *backend* :sqlite)
+
+(use-fixtures :each (fn [run-test] (doseq [backend [:sqlite :files]]
+                                     (binding [*backend* backend]
+                                       (testing (name backend) (run-test))))))
+
 (defn- notebook
   ([] (notebook {}))
-  ([opts] (k/notebook (merge {:path (str (temp-dir) "/notes.db")} opts))))
+  ([opts] (k/notebook (merge (if (= :files *backend*)
+                               {:dir (str (temp-dir) "/notes")}
+                               {:path (str (temp-dir) "/notes.db")})
+                             opts))))
 
 (defmacro ^:private at
   [instant & body]
@@ -154,6 +164,22 @@
     (let [nb (notebook {:actors actors})]
       (is (false? (:signed? (k/entry nb (:entry (k/write! nb gotcha))))))
       (is (true? (:signed? (k/entry nb (:entry (k/write! nb (assoc gotcha :title "z" :key key))))))))))
+
+(deftest a-revision-number-lands-once-whoever-writes-it
+  (let [nb (notebook)
+        {:keys [entry]} (k/write! nb gotcha)
+        rec {:entry entry :seq 2 :title "a" :labels {"kind" "fact"} :actor "claude" :at "2026-11-21T00:00:00Z"}]
+    (store/append! (:store nb) :revision rec nil)
+    (is (= :kajero/stale-base (refusal #(store/append! (:store nb) :revision (assoc rec :title "b") nil))))
+    (is (= "a" (:title (k/entry nb entry))))))
+
+(deftest flat-files-are-plain-edn
+  (when (= :files *backend*)
+    (let [dir (str (temp-dir) "/notes")
+          nb (k/notebook {:dir dir})
+          {:keys [entry]} (k/write! nb gotcha)]
+      (is (= "Calico v3 is served by CRDs"
+             (:title (read-string (slurp (io/file dir "entries" entry "revisions" "00000001.edn")))))))))
 
 (deftest temp-files-stay-out-of-the-repository
   (is (not (.exists (io/file "notes.db")))))

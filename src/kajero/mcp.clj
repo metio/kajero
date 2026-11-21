@@ -118,7 +118,8 @@
 (defn -main
   [& _]
   (let [env #(not-empty (System/getenv %))
-        nb (k/notebook {:path (or (env "KAJERO_DB") "notes.db")
+        nb (k/notebook {:dir (env "KAJERO_DIR")
+                        :path (or (env "KAJERO_DB") "notes.db")
                         :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
                         :actors (env "KAJERO_ACTORS")})
         writer {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")}]

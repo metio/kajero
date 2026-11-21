@@ -25,9 +25,10 @@
 (def link-types #{"supersedes" "see-also" "contradicts"})
 
 (defn notebook
-  "{:path \"notes.db\" :signing :optional|:required :actors \"allowed_signers\"}"
-  [{:keys [path signing actors] :or {signing :optional}}]
-  {:conn (store/open path) :signing signing :actors actors})
+  "{:path \"notes.db\"} for SQLite or {:dir \"notes/\"} for flat files, with
+   :signing :optional|:required and :actors \"allowed_signers\"."
+  [{:keys [signing actors] :or {signing :optional} :as opts}]
+  {:store (store/open opts) :signing signing :actors actors})
 
 (defn- refuse!
   [reason message data]
@@ -55,26 +56,16 @@
 
 ;; ------------------------------------------------------------------ reads
 
-(defn- revisions-of
-  [{:keys [conn]} entry]
-  (mapv store/read-record (store/query conn "SELECT record, sig FROM revisions WHERE entry = ? ORDER BY seq" entry)))
-
-(defn- observations-of
-  [{:keys [conn]} entry]
-  (mapv store/read-record (store/query conn "SELECT record, sig FROM observations WHERE entry = ?" entry)))
-
-(defn- links-of
-  [{:keys [conn]} entry]
-  (mapv store/read-record (store/query conn "SELECT record, sig FROM links WHERE source = ? OR target = ?" entry entry)))
+(defn- revisions-of [nb entry] (store/revisions (:store nb) entry))
+(defn- observations-of [nb entry] (store/observations (:store nb) entry))
+(defn- links-of [nb entry] (store/links (:store nb) entry))
 
 (defn current
   "The entry's latest revision, or nil."
   [nb entry]
   (peek (revisions-of nb entry)))
 
-(defn- entry-ids
-  [{:keys [conn]}]
-  (map :entry (store/query conn "SELECT DISTINCT entry FROM revisions")))
+(defn- entry-ids [nb] (store/entries (:store nb)))
 
 (defn- view
   [nb entry]
@@ -175,12 +166,8 @@
   (when (empty? labels) (refuse! :kajero/no-labels "an entry needs at least one label" {})))
 
 (defn- insert-revision!
-  [{:keys [conn] :as nb} rec key-file]
-  (let [sig (seal nb rec key-file)
-        hash (record/hash-of rec)]
-    (store/execute! conn "INSERT INTO revisions (hash, entry, seq, record, sig) VALUES (?, ?, ?, ?, ?)"
-                    hash (:entry rec) (:seq rec) (pr-str rec) sig)
-    hash))
+  [nb rec key-file]
+  (store/append! (:store nb) :revision rec (seal nb rec key-file)))
 
 (defn write!
   "Writes a new entry. Returns its id and first revision, the warnings for
@@ -194,7 +181,7 @@
         warnings (label-warnings nb labels)
         similar (similar nb rec)]
     {:entry id
-     :revision (store/in-transaction (:conn nb) #(insert-revision! nb rec key))
+     :revision (insert-revision! nb rec key)
      :warnings warnings
      :similar similar}))
 
@@ -203,26 +190,30 @@
    current revision, so two writers can not overwrite each other unseen."
   [nb id {:keys [base title body labels evidence actor key]}]
   (check-actor! actor)
-  (store/in-transaction
-   (:conn nb)
-   (fn []
-     (let [cur (or (current nb id) (refuse! :kajero/no-entry (str "no entry " id) {:entry id}))
-           cur-hash (record/hash-of cur)]
-       (when (not= base cur-hash)
-         (refuse! :kajero/stale-base "the base is not the current revision" {:entry id :current cur-hash}))
-       (let [rec {:entry id :seq (inc (:seq cur)) :base cur-hash
-                  :title (or title (:title cur)) :body (or body (:body cur))
-                  :labels (or labels (:labels cur))
-                  :evidence (vec evidence) :actor actor :at (str (now))}]
-         (check-content! rec)
-         {:entry id
-          :revision (insert-revision! nb rec key)
-          :warnings (when labels (label-warnings nb labels))})))))
+  (let [cur (or (current nb id) (refuse! :kajero/no-entry (str "no entry " id) {:entry id}))
+        cur-hash (record/hash-of cur)]
+    (when (not= base cur-hash)
+      (refuse! :kajero/stale-base "the base is not the current revision" {:entry id :current cur-hash}))
+    (let [rec {:entry id :seq (inc (:seq cur)) :base cur-hash
+               :title (or title (:title cur)) :body (or body (:body cur))
+               :labels (or labels (:labels cur))
+               :evidence (vec evidence) :actor actor :at (str (now))}]
+      (check-content! rec)
+      {:entry id
+       ;; another writer may land the same :seq between the check above and
+       ;; this append; the store refuses the second one
+       :revision (try (insert-revision! nb rec key)
+                      (catch clojure.lang.ExceptionInfo e
+                        (if (= :kajero/stale-base (:reason (ex-data e)))
+                          (refuse! :kajero/stale-base (ex-message e)
+                                   {:entry id :current (some-> (current nb id) record/hash-of)})
+                          (throw e))))
+       :warnings (when labels (label-warnings nb labels))})))
 
 (defn observe!
   "Records that `actor` checked a revision (the current one by default) and
    found it `held` or `failed`. A failed observation needs evidence."
-  [{:keys [conn] :as nb} id {:keys [revision outcome evidence actor key]}]
+  [nb id {:keys [revision outcome evidence actor key]}]
   (check-actor! actor)
   (when-not (#{"held" "failed"} outcome)
     (refuse! :kajero/bad-outcome "an observation is held or failed" {:outcome outcome}))
@@ -235,26 +226,19 @@
       (refuse! :kajero/no-revision (format "entry %s has no revision %s" id target) {:entry id}))
     (let [rec {:entry id :revision target :outcome outcome :evidence (vec evidence)
                :actor actor :at (str (now))}
-          sig (seal nb rec key)
-          hash (record/hash-of rec)]
-      (store/execute! conn "INSERT INTO observations (hash, entry, revision, record, sig) VALUES (?, ?, ?, ?, ?)"
-                      hash id target (pr-str rec) sig)
+          hash (store/append! (:store nb) :observation rec (seal nb rec key))]
       {:observation hash :standing (:standing (entry nb id))})))
 
 (defn link!
   "Links two entries: `supersedes`, `see-also` or `contradicts`."
-  [{:keys [conn] :as nb} {:keys [source type target actor key]}]
+  [nb {:keys [source type target actor key]}]
   (check-actor! actor)
   (when-not (link-types type)
     (refuse! :kajero/bad-link (str "a link is one of " (str/join ", " (sort link-types))) {:type type}))
   (doseq [e [source target]]
     (when-not (current nb e) (refuse! :kajero/no-entry (str "no entry " e) {:entry e})))
-  (let [rec {:source source :type type :target target :actor actor :at (str (now))}
-        sig (seal nb rec key)
-        hash (record/hash-of rec)]
-    (store/execute! conn "INSERT INTO links (hash, source, target, record, sig) VALUES (?, ?, ?, ?, ?)"
-                    hash source target (pr-str rec) sig)
-    {:link hash}))
+  (let [rec {:source source :type type :target target :actor actor :at (str (now))}]
+    {:link (store/append! (:store nb) :link rec (seal nb rec key))}))
 
 ;; ------------------------------------------------------------------ pages
 
@@ -262,23 +246,20 @@
   "Saves a page: a named selector, with an optional title, intro, order and
    grouping label key. Saving a name again writes a new version; the newest
    one is the page."
-  [{:keys [conn] :as nb} {:keys [name title intro selector group-by actor key]}]
+  [nb {:keys [name title intro selector group-by actor key]}]
   (check-actor! actor)
   (when-not (re-matches #"[a-z0-9][a-z0-9-]*" (str name))
     (refuse! :kajero/bad-page-name "a page name is lower-case letters, digits and dashes" {:name name}))
   (select/compile selector)
   (let [rec {:name name :title (or (not-empty title) name) :intro (or intro "") :selector (or selector "")
              :group-by (not-empty group-by) :actor actor :at (str (now))}
-        sig (seal nb rec key)
-        hash (record/hash-of rec)]
-    (store/execute! conn "INSERT INTO pages (hash, name, record, sig) VALUES (?, ?, ?, ?)" hash name (pr-str rec) sig)
+        hash (store/append! (:store nb) :page rec (seal nb rec key))]
     {:page name :version hash}))
 
 (defn pages
   "The newest version of every page, by name."
-  [{:keys [conn]}]
-  (->> (store/query conn "SELECT record, sig FROM pages")
-       (map store/read-record)
+  [nb]
+  (->> (store/page-versions (:store nb))
        (group-by :name)
        (map (fn [[_ versions]] (last (sort-by :at versions))))
        (sort-by :name)
