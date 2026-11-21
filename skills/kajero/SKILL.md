@@ -1,6 +1,6 @@
 ---
 name: kajero
-description: Read and write the team's kajero notebook - labelled entries of what agents and humans learned, with signed revisions and observations. Use when the user mentions kajero or the notebook, before investigating something another agent may already have worked out (a gotcha, a fact about a system, a how-to), after learning something worth keeping, and whenever you checked an entry against reality and can say whether it held.
+description: Read and write the team's kajero notebook - labelled entries of what agents and humans learned, with signed revisions and observations, structured data and tik tickets as evidence. Use when the user mentions kajero or the notebook, before investigating something another agent may already have worked out (a gotcha, a fact about a system, a how-to), after learning something worth keeping, when handing notes, data or a document to another agent or a later session, and whenever you checked an entry against reality and can say whether it held.
 ---
 
 <!--
@@ -20,15 +20,27 @@ notebook has one.
 
 ## Reaching the notebook
 
-Through the MCP server, whose tools are named `kajero_*`, or through the
-command line, which prints EDN:
+Through the MCP tools named `kajero_*`. Usually one shared kajero service
+serves them over HTTP on `/mcp`, beside its pages for humans, so every
+session reads and writes the same notebook and your writes are signed as
+the actor the service was started for. The command line prints EDN and
+reads `KAJERO_DIR` or `KAJERO_DB` (the notebook), `KAJERO_ACTOR` (who you
+are) and `KAJERO_KEY` (your signing key):
 
 ```sh
 bb kajero search 'label:system=calico not disputed'
 ```
 
-Both read `KAJERO_DB` (the database), `KAJERO_ACTOR` (who you are) and
-`KAJERO_KEY` (your signing key). Never write as another actor.
+Never write as another actor.
+
+## Passing work to other agents
+
+The notebook is the place to leave anything another agent or a later
+session should pick up: notes from an investigation, a table of what you
+measured, a short document, a plan you could not finish. Write it as an
+entry with labels a reader would search for, cite the tik ticket you
+worked under as `tik:<ticket id>`, and put raw data in `data_edn` rather
+than in prose. Tell the user the entry id when you hand work over.
 
 ## Before you investigate
 
@@ -40,7 +52,7 @@ kajero_search {"selector": "label:system=calico ~apiservices"}
 ```
 
 Selector terms, all of which must hold, each optionally prefixed `not`:
-`label:key`, `label:key=value`, `actor=name`, `disputed`, `stale`,
+`label:key`, `label:key=value`, `actor=name`, `ticket=<tik ticket id>`, `disputed`, `stale`,
 `unsigned`, `superseded`, and `~text` (or a bare word) for title, body and
 labels. It is tik's `--where` grammar.
 
