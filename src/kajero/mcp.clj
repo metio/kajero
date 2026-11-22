@@ -32,7 +32,7 @@
     :description "Entries a selector picks, as summaries. With text terms the best match comes first: a match in the title counts most, then labels, body and data, and each summary carries its score and, per term, the field it matched in with the text around it, so you can judge a hit without reading the entry. Without text terms, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, data:field, data:field=value (a dotted field walks the entry's data through maps and into every map of a list, as in data:hosts.domain=x; terms about one list must hold in the same element, and each result carries the deepest matching elements as rows), actor=name, ticket=<tik ticket id>, path=<repository path> (the title, body or evidence names that file; one path ending with the other at a segment boundary counts, so path=helm-charts/x/templates/a.tpl finds an entry citing templates/a.tpl), link=<entry id> (linked to that entry in either direction), link:<type>=<entry id> (linked by supersedes, contradicts or see-also), schema-revision=<hash>, outdated-schema, disputed, stale, unsigned, superseded, retired, ~text. Retired entries are left out unless the selector names retired. An empty selector picks every entry that is not retired."
     :inputSchema {:type "object" :properties {:selector {:type "string"}}}}
    {:name "kajero_get"
-    :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing, links, and the tik tickets its records cite with their current stages. A schema entry also lists the entries using it (used_by)."
+    :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing, links, the observations a later one corrected (corrections), and the tik tickets its records cite with their current stages. A schema entry also lists the entries using it (used_by)."
     :inputSchema {:type "object" :properties entry-arg :required ["entry"]}}
    {:name "kajero_history"
     :description "Every revision, observation and link of an entry, oldest first, with hashes and authors."
@@ -54,11 +54,12 @@
                                      labels-arg evidence-arg data-arg)
                   :required ["entry" "base"]}}
    {:name "kajero_observe"
-    :description "Record that you checked an entry's revision (the current one by default) and found it held or failed. Base it on a fresh check, never on having read the entry. A failed observation needs evidence and disputes the revision until a new revision answers it."
+    :description "Record that you checked an entry's revision (the current one by default) and found it held or failed. Base it on a fresh check, never on having read the entry. A failed observation needs evidence and disputes the revision until a new revision answers it. To correct an earlier observation whose evidence or reasoning turned out wrong, pass its hash (from kajero_history) as corrects, with evidence saying what was wrong: the new outcome replaces its verdict, or withdrawn takes it back without a new one. The earlier observation stays in the history, marked corrected, and kajero_get lists it under corrections."
     :inputSchema {:type "object"
                   :properties (merge entry-arg
-                                     {:outcome {:type "string" :enum ["held" "failed"]}
-                                      :revision {:type "string"}}
+                                     {:outcome {:type "string" :enum ["held" "failed" "withdrawn"]}
+                                      :revision {:type "string"}
+                                      :corrects {:type "string" :description "the hash of the earlier observation this one corrects"}}
                                      evidence-arg)
                   :required ["entry" "outcome"]}}
    {:name "kajero_retire"
@@ -121,7 +122,7 @@
           args ["entry" "source" "target" "migration"]))
 
 (defn- call-checked
-  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision source type target data_edn migration dry_run reason]}]
+  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision corrects source type target data_edn migration dry_run reason]}]
   (case tool
     "kajero_search" (k/search nb selector)
     "kajero_get" (let [e (or (k/entry nb entry) (throw (ex-info (str "no entry " entry) {:reason :kajero/no-entry})))]
@@ -135,7 +136,8 @@
     "kajero_revise" (k/revise! nb entry (merge writer {:base base :title title :body body
                                                        :labels (not-empty labels) :evidence evidence}
                                                (when data_edn {:data (read-edn data_edn)})))
-    "kajero_observe" (k/observe! nb entry (merge writer {:outcome outcome :revision revision :evidence evidence}))
+    "kajero_observe" (k/observe! nb entry (merge writer {:outcome outcome :revision revision :evidence evidence
+                                                         :corrects corrects}))
     "kajero_retire" (k/retire! nb entry (merge writer {:base base :reason reason :evidence evidence}))
     "kajero_restore" (k/restore! nb entry (merge writer {:base base :evidence evidence}))
     "kajero_link" (k/link! nb (merge writer {:source source :type type :target target}))

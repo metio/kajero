@@ -134,11 +134,37 @@
 
 (defn- entry-ids [nb] (store/entries (:store nb)))
 
+(defn- corrections
+  "Every observation a later one corrected, oldest first:
+   {:observation :outcome :revision :actor :at} of the corrected one with
+   :corrected-by, :correction (the later outcome, or withdrawn) and the
+   :evidence the correction gave."
+  [observations]
+  (let [by-hash (into {} (map (juxt record/hash-of identity)) observations)]
+    (->> observations
+         (filter :corrects)
+         (keep (fn [c]
+                 (when-let [o (by-hash (:corrects c))]
+                   {:observation (:corrects c) :outcome (:outcome o) :revision (:revision o)
+                    :actor (:actor o) :at (:at o)
+                    :corrected-by (record/hash-of c) :correction (:outcome c)
+                    :corrector (:actor c) :corrected-at (:at c) :evidence (:evidence c)})))
+         (sort-by :at)
+         vec)))
+
+(defn- counted
+  "The observations that count toward a standing: not withdrawn, and not
+   corrected by a later observation."
+  [observations]
+  (let [corrected (into #{} (keep :corrects) observations)]
+    (remove #(or (= "withdrawn" (:outcome %)) (corrected (record/hash-of %))) observations)))
+
 (defn- view
   [nb entry]
   (let [revisions (revisions-of nb entry)
         rev (peek revisions)
-        observations (observations-of nb entry)
+        all-observations (observations-of nb entry)
+        observations (counted all-observations)
         links (links-of nb entry)]
     {:entry entry
      :revision (record/hash-of rev)
@@ -158,8 +184,9 @@
      :retired (:retired rev)
      :outdated-schema? (boolean (when-let [{schema-entry :entry pinned :revision} (:schema rev)]
                                   (not= pinned (some-> (peek (revisions-of nb schema-entry)) record/hash-of))))
-     :actors (into #{} (map :actor) (concat revisions observations))
-     :ticket-ids (into #{} (mapcat (comp tik/ticket-ids :evidence)) (concat revisions observations))}))
+     :corrections (corrections all-observations)
+     :actors (into #{} (map :actor) (concat revisions all-observations))
+     :ticket-ids (into #{} (mapcat (comp tik/ticket-ids :evidence)) (concat revisions all-observations))}))
 
 (declare schema-users)
 
@@ -170,6 +197,7 @@
   (when (current nb id)
     (-> (view nb id)
         (dissoc :actors :ticket-ids)
+        (as-> e (if (seq (:corrections e)) e (dissoc e :corrections)))
         (cond-> (nil? (:retired (current nb id))) (dissoc :retired))
         (cond-> (= "schema" (get-in (current nb id) [:labels "kind"]))
           (assoc :used-by (schema-users nb id)))
@@ -238,14 +266,20 @@
                      (assoc :summary (first (str/split-lines (or (:body v) ""))))))))))
 
 (defn history
-  "Every revision, observation and link of the entry, oldest first."
+  "Every revision, observation and link of the entry, oldest first. An
+   observation a later one corrected carries :corrected-by."
   [nb id]
   (->> (concat (for [r (revisions-of nb id)] [:revision r])
-               (for [o (observations-of nb id)] [:observation o])
+               (let [obs (observations-of nb id)
+                     corrector (into {} (keep #(when (:corrects %) [(:corrects %) (record/hash-of %)])) obs)]
+                 (for [o obs
+                       :let [h (record/hash-of o)]]
+                   [:observation (cond-> (assoc o :hash h)
+                                   (corrector h) (assoc :corrected-by (corrector h)))]))
                (for [l (links-of nb id)] [:link l]))
        (map (fn [[kind r]]
               (-> r
-                  (assoc :kind kind :hash (record/hash-of r) :signed? (some? (:sig r)))
+                  (assoc :kind kind :hash (or (:hash r) (record/hash-of r)) :signed? (some? (:sig r)))
                   (dissoc :sig))))
        (sort-by :at)
        vec))
@@ -441,23 +475,46 @@
     (refuse! :kajero/not-retired (str "entry " id " is not retired") {:entry id}))
   (retirement! nb id opts nil))
 
+(defn- corrected!
+  "The observation of entry `id` whose hash is `h`, refusing one the entry
+   does not have or that a later observation already corrected."
+  [nb id h]
+  (let [obs (observations-of nb id)
+        o (or (some #(when (= h (record/hash-of %)) %) obs)
+              (refuse! :kajero/no-observation (format "entry %s has no observation %s" id h)
+                       {:entry id :observation h}))]
+    (when-let [c (some #(when (= h (:corrects %)) %) obs)]
+      (refuse! :kajero/already-corrected
+               (format "observation %s is already corrected by %s; correct that one instead" h (record/hash-of c))
+               {:entry id :observation h :corrected-by (record/hash-of c)}))
+    o))
+
 (defn observe!
   "Records that `actor` checked a revision (the current one by default) and
-   found it `held` or `failed`. A failed observation needs evidence."
-  [nb id {:keys [revision outcome evidence actor key]}]
+   found it `held` or `failed`. A failed observation needs evidence.
+
+   With :corrects naming an earlier observation of the entry, the new one
+   replaces its verdict: the earlier one stays in the history, marked
+   corrected, and stops counting toward the standing. The outcome
+   `withdrawn` takes a verdict back without giving a new one. A correction
+   needs evidence saying what was wrong."
+  [nb id {:keys [revision outcome evidence actor key corrects]}]
   (check-actor! actor)
-  (when-not (#{"held" "failed"} outcome)
-    (refuse! :kajero/bad-outcome "an observation is held or failed" {:outcome outcome}))
-  (when (and (= "failed" outcome) (empty? (evidence-list evidence)))
-    (refuse! :kajero/no-evidence "a failed observation needs evidence" {}))
+  (when-not (or (#{"held" "failed"} outcome) (and corrects (= "withdrawn" outcome)))
+    (refuse! :kajero/bad-outcome "an observation is held or failed, or withdrawn when it corrects another"
+             {:outcome outcome}))
+  (when (and (or (= "failed" outcome) corrects) (empty? (evidence-list evidence)))
+    (refuse! :kajero/no-evidence (if corrects "a correction needs evidence" "a failed observation needs evidence") {}))
   (check-tickets! nb (evidence-list evidence))
   (let [revs (into {} (map (juxt record/hash-of identity)) (revisions-of nb id))
         cur (current nb id)
-        target (or revision (some-> cur record/hash-of))]
+        earlier (when corrects (corrected! nb id corrects))
+        target (or revision (if (= "withdrawn" outcome) (:revision earlier) (some-> cur record/hash-of)))]
     (when-not (contains? revs target)
       (refuse! :kajero/no-revision (format "entry %s has no revision %s" id target) {:entry id}))
-    (let [rec {:entry id :revision target :outcome outcome :evidence (evidence-list evidence)
-               :actor actor :at (str (now))}
+    (let [rec (cond-> {:entry id :revision target :outcome outcome :evidence (evidence-list evidence)
+                       :actor actor :at (str (now))}
+                corrects (assoc :corrects corrects))
           hash (store/append! (:store nb) :observation rec (seal nb rec key))]
       {:observation hash :standing (:standing (entry nb id))})))
 
