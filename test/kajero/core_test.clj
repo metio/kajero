@@ -1,5 +1,5 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
-;; SPDX-License-Identifier: 0BSD
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.core-test
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]

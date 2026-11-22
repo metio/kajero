@@ -1,5 +1,5 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
-;; SPDX-License-Identifier: 0BSD
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.core
   "A notebook: entries written and revised by actors, observed to hold or
    fail, linked to each other, and found again by selector.

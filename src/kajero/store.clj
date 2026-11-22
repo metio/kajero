@@ -1,5 +1,5 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
-;; SPDX-License-Identifier: 0BSD
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.store
   "The SQLite database behind a notebook. Every table is append-only: a
    revision, an observation and a link are written once and never changed,

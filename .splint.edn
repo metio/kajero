@@ -1,5 +1,5 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
-;; SPDX-License-Identifier: 0BSD
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 {;; Uniform Class/.member syntax is a stylistic migration with no
  ;; correctness gain; type hints already keep the interop reflection-free.
  lint/prefer-method-values {:enabled false}}

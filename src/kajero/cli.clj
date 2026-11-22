@@ -1,5 +1,5 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
-;; SPDX-License-Identifier: 0BSD
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.cli
   "The command line. Every command prints EDN on stdout; a refusal prints its
    reason on stderr and exits 1.
