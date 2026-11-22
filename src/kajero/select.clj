@@ -1,5 +1,5 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
-;; SPDX-License-Identifier: 0BSD
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.select
   "Selectors pick entries, in the grammar of tik's --where: whitespace-
    separated terms, all ANDed, each optionally prefixed `not`; `and` is

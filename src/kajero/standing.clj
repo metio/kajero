@@ -1,5 +1,5 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
-;; SPDX-License-Identifier: 0BSD
+;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.standing
   "An entry's standing, derived from the observations of its current
    revision on every read and never stored.
