@@ -97,7 +97,7 @@ padding:.25rem .5rem;border-radius:999px;text-decoration:none;border:1px solid t
 border:1px solid var(--rule);display:inline-flex;gap:.35rem;align-items:center}
 .badge.held{color:var(--held)}.badge.failed,.badge.disputed{color:var(--failed);border-color:color-mix(in srgb,var(--failed) 45%,transparent)}
 .badge.stale{color:var(--stale);border-color:color-mix(in srgb,var(--stale) 45%,transparent)}
-.badge.unsigned{color:var(--muted)}
+.badge.unsigned{color:var(--muted)}.badge.retired{color:var(--muted)}.retired{color:var(--muted)}
 .tally{letter-spacing:.08em}
 .group{margin-top:2rem}.group>h2{font-family:ui-monospace,Menlo,monospace;font-size:.9rem;
 text-transform:uppercase;letter-spacing:.12em;color:var(--muted);border-bottom:1px solid var(--rule);padding-bottom:.4rem}
@@ -329,10 +329,23 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
               [:p.selector [:a {:href (view-href selector group-by)} selector] " · " (count entries) " entries"]
               (if (seq entries) (grouped entries group-by #(sheet nb % true)) [:p.empty "Nothing matches yet."])))))
 
-(defn- history-item [{:keys [kind actor at outcome evidence title type source target hash signed?]}]
+(defn- mark-restores
+  "The history with each revision that lifted a retirement marked :restored?."
+  [records]
+  (first (reduce (fn [[acc retired?] r]
+                   (if (= :revision (:kind r))
+                     [(conj acc (cond-> r (and retired? (not (:retired r))) (assoc :restored? true)))
+                      (some? (:retired r))]
+                     [(conj acc r) retired?]))
+                 [[] false]
+                 records)))
+
+(defn- history-item [{:keys [kind actor at outcome evidence title type source target hash signed? retired restored?]}]
   [:li {:class (if (= kind :observation) (str "observation-" outcome) (name kind))}
    [:div [:strong (case kind
-                    :revision (str "revised: " title)
+                    :revision (cond retired (str "retired: " (:reason retired))
+                                    restored? "restored"
+                                    :else (str "revised: " title))
                     :observation (str "observed: " outcome)
                     :link (str source " " type " " target))]]
    [:div.meta actor " · " (when-str at) (when-not signed? " · unsigned")]
@@ -340,12 +353,15 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
    [:div.selector {:title hash} (subs hash 0 (min 19 (count hash)))]])
 
 (defn- entry-page [nb id token]
-  (when-let [{:keys [title body labels standing evidence links revision actor at signed? tickets] :as e} (k/entry nb id)]
+  (when-let [{:keys [title body labels standing evidence links revision actor at signed? tickets retired] :as e} (k/entry nb id)]
     (layout {:title title}
             [:article.sheet
              [:h1 title]
              (chips labels)
              (kajero.web/standing standing signed?)
+             (when retired
+               [:p.retired [:span.badge.retired "retired"] " " (:reason retired)
+                " - left out of searches until it is restored"])
              [:div.body (markdown body)]
              (data-view nb e)
              (when (seq evidence) [:p.meta "evidence: " (str/join "; " evidence)])
@@ -370,7 +386,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                 [:button.go.failed {:type "submit" :name "outcome" :value "failed"} "It failed"]]]]
              [:section.card
               [:h2 {:style "margin-top:0"} "History"]
-              [:ol.timeline (map history-item (reverse (k/history nb id)))]]]
+              [:ol.timeline (map history-item (reverse (mark-restores (k/history nb id))))]]]
             [:details.card {:style "margin-top:1rem"}
              [:summary "Revise this entry"]
              [:form.stack {:method "post" :action (str "/e/" id "/revise") :style "margin-top:.8rem"}
@@ -381,7 +397,20 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                [:textarea {:name "labels" :style "min-height:5rem"} (str/join "\n" (map #(str/join "=" %) (sort labels)))]]
               [:label.f "Body (Markdown)" [:textarea {:name "body"} body]]
               [:label.f "Evidence" [:input {:name "evidence"}]]
-              [:button.go {:type "submit"} "Save revision"]]])))
+              [:button.go {:type "submit"} "Save revision"]]]
+            (if retired
+              [:form.card {:method "post" :action (str "/e/" id "/restore") :style "margin-top:1rem"}
+               [:input {:type "hidden" :name "token" :value token}]
+               [:input {:type "hidden" :name "base" :value revision}]
+               [:button.go {:type "submit"} "Restore this entry"]]
+              [:details.card {:style "margin-top:1rem"}
+               [:summary "Retire this entry"]
+               [:p.meta "For an entry written by mistake, as a test, or twice. It keeps its history and can be restored. When a better entry replaces it, link it as superseded instead."]
+               [:form.stack {:method "post" :action (str "/e/" id "/retire") :style "margin-top:.8rem"}
+                [:input {:type "hidden" :name "token" :value token}]
+                [:input {:type "hidden" :name "base" :value revision}]
+                [:label.f "Reason" [:input {:name "reason" :required true}]]
+                [:button.go {:type "submit"} "Retire"]]]))))
 
 (defn- labels-page [nb]
   (layout {:title "Labels"}
@@ -437,7 +466,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
 (defn- post [nb writer token path form]
   (when-not (= token (get form "token"))
     (throw (ex-info "the form is not from this server; reload the page" {:reason :kajero/bad-token})))
-  (let [[_ id action] (re-matches #"/e/([^/]+)/(revise|observe)" path)]
+  (let [[_ id action] (re-matches #"/e/([^/]+)/(revise|observe|retire|restore)" path)]
     (cond
       (= path "/new")
       (let [{:keys [entry]} (k/write! nb (merge writer {:title (get form "title") :body (get form "body")
@@ -455,6 +484,14 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
       (do (k/revise! nb id (merge writer {:base (get form "base") :title (get form "title") :body (get form "body")
                                           :labels (label-lines (get form "labels"))
                                           :evidence (evidence (get form "evidence"))}))
+          (redirect (str "/e/" (enc id))))
+
+      (= action "retire")
+      (do (k/retire! nb id (merge writer {:base (get form "base") :reason (get form "reason")}))
+          (redirect (str "/e/" (enc id))))
+
+      (= action "restore")
+      (do (k/restore! nb id (merge writer {:base (get form "base")}))
           (redirect (str "/e/" (enc id))))
 
       (= action "observe")

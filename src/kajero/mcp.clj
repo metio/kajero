@@ -28,7 +28,7 @@
 
 (def tools
   [{:name "kajero_search"
-    :description "Entries a selector picks, as summaries, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, actor=name, ticket=<tik ticket id>, schema-revision=<hash>, outdated-schema, disputed, stale, unsigned, superseded, ~text. An empty selector picks every entry."
+    :description "Entries a selector picks, as summaries, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, actor=name, ticket=<tik ticket id>, schema-revision=<hash>, outdated-schema, disputed, stale, unsigned, superseded, retired, ~text. Retired entries are left out unless the selector names retired. An empty selector picks every entry that is not retired."
     :inputSchema {:type "object" :properties {:selector {:type "string"}}}}
    {:name "kajero_get"
     :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing, links, and the tik tickets its records cite with their current stages. A schema entry also lists the entries using it (used_by)."
@@ -60,6 +60,16 @@
                                       :revision {:type "string"}}
                                      evidence-arg)
                   :required ["entry" "outcome"]}}
+   {:name "kajero_retire"
+    :description "Retire an entry written by mistake, as a test, or as a duplicate: a signed revision on top of base that keeps its content and history and records the reason. Search, labels and the similar-entry check leave it out unless the selector names `retired`; kajero_get still reads it. kajero_restore lifts it. When a better entry replaces it, link supersedes instead."
+    :inputSchema {:type "object"
+                  :properties (merge entry-arg {:base {:type "string"} :reason {:type "string"}} evidence-arg)
+                  :required ["entry" "base" "reason"]}}
+   {:name "kajero_restore"
+    :description "Restore a retired entry: a revision on top of base that lifts the retirement and leaves the content as it was."
+    :inputSchema {:type "object"
+                  :properties (merge entry-arg {:base {:type "string"}} evidence-arg)
+                  :required ["entry" "base"]}}
    {:name "kajero_link"
     :description "Link two entries: source supersedes, contradicts or is see-also target."
     :inputSchema {:type "object"
@@ -82,7 +92,7 @@
 
 (defn call-tool
   "Runs one tool; returns the result, or throws ex-info for a refusal."
-  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision source type target data_edn migration dry_run]}]
+  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision source type target data_edn migration dry_run reason]}]
   (case tool
     "kajero_search" (k/search nb selector)
     "kajero_get" (let [e (or (k/entry nb entry) (throw (ex-info (str "no entry " entry) {:reason :kajero/no-entry})))]
@@ -97,6 +107,8 @@
                                                        :labels (not-empty labels) :evidence evidence}
                                                (when data_edn {:data (read-edn data_edn)})))
     "kajero_observe" (k/observe! nb entry (merge writer {:outcome outcome :revision revision :evidence evidence}))
+    "kajero_retire" (k/retire! nb entry (merge writer {:base base :reason reason :evidence evidence}))
+    "kajero_restore" (k/restore! nb entry (merge writer {:base base :evidence evidence}))
     "kajero_link" (k/link! nb (merge writer {:source source :type type :target target}))
     "kajero_migrate" (k/migrate! nb migration (assoc writer :dry-run? (true? dry_run)))
     (throw (ex-info (str "unknown tool " tool) {:reason :kajero/unknown-tool}))))

@@ -121,6 +121,7 @@
                 rev (filter #(= (record/hash-of rev) (:revision %)) observations) (now))
      :links (mapv #(select-keys % [:source :type :target]) links)
      :superseded? (boolean (some #(and (= "supersedes" (:type %)) (= entry (:target %))) links))
+     :retired (:retired rev)
      :outdated-schema? (boolean (when-let [{schema-entry :entry pinned :revision} (:schema rev)]
                                   (not= pinned (some-> (peek (revisions-of nb schema-entry)) record/hash-of))))
      :actors (into #{} (map :actor) (concat revisions observations))
@@ -135,12 +136,13 @@
   (when (current nb id)
     (-> (view nb id)
         (dissoc :actors :ticket-ids)
+        (cond-> (nil? (:retired (current nb id))) (dissoc :retired))
         (cond-> (= "schema" (get-in (current nb id) [:labels "kind"]))
           (assoc :used-by (schema-users nb id)))
         (assoc :tickets (tickets nb (concat (revisions-of nb id) (observations-of nb id)))))))
 
 (defn- row
-  [{:keys [title body labels standing signed? superseded? actors ticket-ids outdated-schema?] :as v}]
+  [{:keys [title body labels standing signed? superseded? retired actors ticket-ids outdated-schema?] :as v}]
   {:labels labels
    :schema-revision (get-in v [:schema :revision])
    :outdated-schema? outdated-schema?
@@ -151,18 +153,28 @@
    :disputed? (:disputed? standing)
    :stale? (:stale? standing)
    :unsigned? (not signed?)
-   :superseded? superseded?})
+   :superseded? superseded?
+   :retired? (some? retired)})
+
+(defn- live?
+  "Whether the entry is not retired. Reads that list entries - search,
+   labels, similar - skip retired ones unless asked for them."
+  [nb id]
+  (nil? (:retired (current nb id))))
 
 (defn search
-  "Summaries of the entries the selector picks, most recently changed first."
+  "Summaries of the entries the selector picks, most recently changed first.
+   Retired entries are left out unless the selector names `retired`."
   [nb selector]
-  (let [pred (select/compile selector)]
+  (let [pred (cond-> (select/compile selector)
+               (not (select/names? selector "retired")) (every-pred (complement :retired?)))]
     (->> (entry-ids nb)
          (map #(view nb %))
          (filter (comp pred row))
          (sort-by :at #(compare %2 %1))
          (mapv (fn [v]
                  (-> (select-keys v [:entry :revision :title :labels :at :standing])
+                     (cond-> (:retired v) (assoc :retired (:retired v)))
                      (assoc :summary (first (str/split-lines (or (:body v) ""))))))))))
 
 (defn history
@@ -179,12 +191,13 @@
        vec))
 
 (defn labels
-  "Every label of a current revision, as {key {value count}}."
+  "Every label of a current revision of an entry that is not retired, as
+   {key {value count}}."
   [nb]
   (reduce (fn [acc id]
             (reduce-kv (fn [acc k v] (update-in acc [k v] (fnil inc 0))) acc (:labels (current nb id))))
           (sorted-map)
-          (entry-ids nb)))
+          (filter #(live? nb %) (entry-ids nb))))
 
 ;; ----------------------------------------------------------------- writes
 
@@ -201,9 +214,10 @@
                (format "new label key %s; keys in use: %s" k (str/join ", " (keys in-use)))))))))
 
 (defn- similar
-  "Entries that look like the same knowledge: the same title, or the same labels."
+  "Entries that look like the same knowledge: the same title, or the same
+   labels. A retired entry is not offered."
   [nb {:keys [title labels]}]
-  (->> (entry-ids nb)
+  (->> (filter #(live? nb %) (entry-ids nb))
        (keep #(let [rev (current nb %)]
                 (when (or (= (str/lower-case title) (str/lower-case (:title rev)))
                           (= labels (:labels rev)))
@@ -307,7 +321,9 @@
                             :title (or title (:title cur)) :body (or body (:body cur))
                             :labels (or labels (:labels cur))
                             :evidence (evidence-list evidence) :actor actor :at (str (now))}
-                     (some? data) (assoc :data data))
+                     (some? data) (assoc :data data)
+                     ;; a revision keeps the entry retired; only restore! lifts it
+                     (:retired cur) (assoc :retired (:retired cur)))
           _ (check-content! base-rec)
           {schema-ref :ref schema-warnings :warnings} (check-data! nb base-rec (get-in cur [:labels "schema"]))
           rec (cond-> base-rec schema-ref (assoc :schema schema-ref))]
@@ -321,6 +337,49 @@
                                    {:entry id :current (some-> (current nb id) record/hash-of)})
                           (throw e))))
        :warnings (not-empty (concat schema-warnings (when labels (label-warnings nb labels))))})))
+
+(defn- retirement!
+  "Writes a revision of entry `id` on top of `base` with the current
+   content unchanged and the retirement set to `retired`, nil to lift it."
+  [nb id {:keys [base evidence actor key]} retired]
+  (check-actor! actor)
+  (check-tickets! nb (evidence-list evidence))
+  (let [cur (or (current nb id) (refuse! :kajero/no-entry (str "no entry " id) {:entry id}))
+        cur-hash (record/hash-of cur)]
+    (when (not= base cur-hash)
+      (refuse! :kajero/stale-base "the base is not the current revision" {:entry id :current cur-hash}))
+    (let [rec (cond-> (-> cur
+                          (dissoc :sig :retired)
+                          (assoc :seq (inc (:seq cur)) :base cur-hash
+                                 :evidence (evidence-list evidence) :actor actor :at (str (now))))
+                retired (assoc :retired retired))]
+      {:entry id
+       :revision (try (insert-revision! nb rec key)
+                      (catch clojure.lang.ExceptionInfo e
+                        (if (= :kajero/stale-base (:reason (ex-data e)))
+                          (refuse! :kajero/stale-base (ex-message e)
+                                   {:entry id :current (some-> (current nb id) record/hash-of)})
+                          (throw e))))})))
+
+(defn retire!
+  "Retires an entry: a new revision on top of `base`, its content
+   unchanged, carrying the reason. Search, labels and the similar-entry
+   check leave a retired entry out until it is restored; reading it by id
+   and its history still work, and nothing is deleted."
+  [nb id {:keys [reason] :as opts}]
+  (when (str/blank? reason)
+    (refuse! :kajero/no-reason "retiring an entry needs a reason" {:entry id}))
+  (when (some-> (current nb id) :retired)
+    (refuse! :kajero/retired (str "entry " id " is already retired") {:entry id}))
+  (retirement! nb id opts {:reason reason}))
+
+(defn restore!
+  "Restores a retired entry: a new revision on top of `base`, its content
+   unchanged and the retirement lifted."
+  [nb id opts]
+  (when (and (current nb id) (not (:retired (current nb id))))
+    (refuse! :kajero/not-retired (str "entry " id " is not retired") {:entry id}))
+  (retirement! nb id opts nil))
 
 (defn observe!
   "Records that `actor` checked a revision (the current one by default) and
