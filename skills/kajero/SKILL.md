@@ -64,6 +64,14 @@ With text terms, the best match comes first, and each result carries
 snippets and `get` only the entries worth reading. A term is a substring,
 so a short one matches inside longer words; prefer a distinctive word.
 
+To ask about a field of the data, use `data:field=value` (or `data:field`
+for presence): `kajero_search {"selector": "data:domain=lms.example.org"}`
+returns the entries with such a row, each with only the matching `rows`, so
+there is no need to read a whole table and filter it by hand. Several
+`data:` terms must hold in the same row; a dotted field such as
+`data:owner.team` reads nested maps, and values compare as printed, a
+keyword without its colon.
+
 Read the standing before trusting an entry. `disputed` means someone found
 the current revision wrong; `stale` means nobody confirmed it for longer
 than its kind allows; a high `held` count from several actors with recent
