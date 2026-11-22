@@ -64,6 +64,22 @@
   [selector term]
   (boolean (some #{term} (terms selector))))
 
+(defn- text-term? [t]
+  (and (not (contains? #{"not" "disputed" "stale" "unsigned" "superseded" "retired" "outdated-schema"} t))
+       (not (str/includes? t "="))
+       (not (str/starts-with? t "label:"))))
+
+(defn text-terms
+  "The text the selector asks for, lower-cased and without `~`: its bare
+   words and ~terms, leaving out the ones after `not`."
+  [selector]
+  (loop [[t & more] (terms selector) acc []]
+    (cond
+      (nil? t) acc
+      (= t "not") (recur (rest more) acc)
+      (text-term? t) (recur more (conj acc (str/lower-case (str/replace t #"^~" ""))))
+      :else (recur more acc))))
+
 (defn compile
   [selector]
   (loop [[t & more] (remove #{"and"} (str/split (str/trim (or selector "")) #"\s+"))

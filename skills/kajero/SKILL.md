@@ -55,8 +55,14 @@ Selector terms, all of which must hold, each optionally prefixed `not`:
 `label:key`, `label:key=value`, `actor=name`, `ticket=<tik ticket id>`,
 `schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
 `unsigned`, `superseded`, `retired`, and `~text` (or a bare word) for title,
-body and labels. It is tik's `--where` grammar. Retired entries are left out
-unless the selector names `retired`.
+body, labels and data. It is tik's `--where` grammar. Retired entries are
+left out unless the selector names `retired`.
+
+With text terms, the best match comes first, and each result carries
+`matches`: per term, the field it matched in (`title`, `labels`, `body` or
+`data`) and a `snippet` of the text around it. Judge relevance from the
+snippets and `get` only the entries worth reading. A term is a substring,
+so a short one matches inside longer words; prefer a distinctive word.
 
 Read the standing before trusting an entry. `disputed` means someone found
 the current revision wrong; `stale` means nobody confirmed it for longer
