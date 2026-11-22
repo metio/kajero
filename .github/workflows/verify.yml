@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: The kajero Authors
+# SPDX-License-Identifier: 0BSD
+
+name: Verify
+on:
+  merge_group:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  clojure:
+    # The shared Clojure pipeline of the metio repositories (tests, clj-kondo
+    # at fail-on-warning, eastwood, splint, cljfmt, clj-watson), with the
+    # toolchain .breto.edn names. Pinned to a release SHA, which Renovate
+    # bumps through the version comment.
+    name: Clojure
+    uses: metio/ci/.github/workflows/clojure.yml@d1d58ce5b2b4dbac322bedd78203810def514bcc # 2026.11.15184511
+    with:
+      kondo-paths: src test
+  verify:
+    # The single required check: new jobs only need to be listed here.
+    name: Verify
+    needs: [clojure]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify every job succeeded or skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          bad=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"')
+          [ -z "$bad" ] || { echo "::error::$bad"; exit 1; }

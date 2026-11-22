@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: The kajero Authors
+# SPDX-License-Identifier: 0BSD
+
+name: Baseline
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: metio/ci/.github/workflows/baseline.yml@d1d58ce5b2b4dbac322bedd78203810def514bcc # 2026.11.15184511
+  baseline:
+    name: Baseline
+    needs: [checks]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULT: ${{ needs.checks.result }}
+        run: '[ "$RESULT" = success ] || { echo "::error::the baseline checks ended in $RESULT"; exit 1; }'

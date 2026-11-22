@@ -6,7 +6,8 @@
    A record is a map of plain data. Its canonical form prints every map with
    sorted keys, so the same record always gives the same bytes, the same
    hash and a signature that verifies wherever the bytes are read."
-  (:require [tik.sign :as sign])
+  (:require [clojure.string :as str]
+            [tik.sign :as sign])
   (:import (java.nio.charset StandardCharsets)
            (java.security MessageDigest)))
 
@@ -31,7 +32,7 @@
   "The sha256 of the record's canonical bytes, as `sha256-<hex>`."
   [record]
   (let [digest (.digest (MessageDigest/getInstance "SHA-256") (->bytes record))]
-    (str "sha256-" (apply str (map #(format "%02x" %) digest)))))
+    (str "sha256-" (str/join (map #(format "%02x" %) digest)))))
 
 (defn sign
   "The detached signature of the record by the key in `key-file`."

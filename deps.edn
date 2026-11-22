@@ -11,4 +11,15 @@
          :extra-deps {lambdaisland/kaocha {:mvn/version "1.91.1392"}}
          :main-opts ["-m" "kaocha.runner"]}
   :run {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]
-        :main-opts ["-m" "kajero.cli"]}}}
+        :main-opts ["-m" "kajero.cli"]}
+  :eastwood {:extra-paths ["test"]
+             :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+             :extra-deps {jonase/eastwood {:mvn/version "1.4.3"}
+                          lambdaisland/kaocha {:mvn/version "1.91.1392"}}
+             :main-opts ["-m" "eastwood.lint" "{:source-paths [\"src\"] :test-paths [\"test\"]}"]}
+  :splint {:extra-deps {io.github.noahtheduke/splint {:mvn/version "1.25.0"}}
+           :main-opts ["-m" "noahtheduke.splint" "src" "test"]}
+  :cljfmt {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.16.6"}}
+           :main-opts ["-m" "cljfmt.main"]}
+  :watson {:extra-deps {io.github.clj-holmes/clj-watson {:git/tag "v6.2.0" :git/sha "c0dcdf323efb349baa9ec964298f725baccda73b"}}
+           :main-opts ["-m" "clj-watson.cli" "scan"]}}}

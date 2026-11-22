@@ -10,7 +10,7 @@
      KAJERO_ACTORS   the allowed-signers file signatures are checked against
      KAJERO_ACTOR    the actor a write names
      KAJERO_KEY      the private key a write is signed with"
-  (:require [clojure.pprint :as pprint]
+  (:require [clojure.pprint :as pp]
             [clojure.string :as str]
             [kajero.core :as k])
   (:gen-class))
@@ -76,7 +76,7 @@
     (let [nb (k/notebook {:path (or (env "KAJERO_DB") "notes.db")
                           :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
                           :actors (env "KAJERO_ACTORS")})]
-      (pprint/pprint (run-command nb args))
+      (pp/pprint (run-command nb args))
       (shutdown-agents))
     (catch clojure.lang.ExceptionInfo e
       (binding [*out* *err*]

@@ -18,7 +18,7 @@
 
 (defmacro ^:private at
   [instant & body]
-  `(binding [k/*now* (Instant/parse ~instant)] ~@body))
+  `(binding [k/*now* (Instant/parse ~instant)] (let [res# (do ~@body)] res#)))
 
 (defn- refusal
   [f]

@@ -18,7 +18,7 @@
    "howto" (Duration/ofDays 180)
    "gotcha" (Duration/ofDays 180)})
 
-(def ^:private counting-window (Duration/ofDays 30))
+(def ^:private ^Duration counting-window (Duration/ofDays 30))
 
 (defn- independent
   "Observations that count: an actor's observation counts when it comes a
