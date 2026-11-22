@@ -6,3 +6,4 @@
 .lsp/
 target/
 *.db
+/.eastwood

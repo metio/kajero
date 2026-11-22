@@ -127,9 +127,9 @@
 (defn history
   "Every revision, observation and link of the entry, oldest first."
   [nb id]
-  (->> (concat (map #(vector :revision %) (revisions-of nb id))
-               (map #(vector :observation %) (observations-of nb id))
-               (map #(vector :link %) (links-of nb id)))
+  (->> (concat (for [r (revisions-of nb id)] [:revision r])
+               (for [o (observations-of nb id)] [:observation o])
+               (for [l (links-of nb id)] [:link l]))
        (map (fn [[kind r]]
               (-> r
                   (assoc :kind kind :hash (record/hash-of r) :signed? (some? (:sig r)))

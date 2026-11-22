@@ -4,7 +4,8 @@
   "The SQLite database behind a notebook. Every table is append-only: a
    revision, an observation and a link are written once and never changed,
    so the history of an entry is its rows in order."
-  (:require [clojure.edn :as edn])
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str])
   (:import (java.sql Connection DriverManager PreparedStatement ResultSet)))
 
 (def ^:private schema
@@ -46,7 +47,7 @@
   (with-open [ps (bind! (.prepareStatement conn sql) params)
               ^ResultSet rs (.executeQuery ps)]
     (let [md (.getMetaData rs)
-          cols (mapv #(keyword (.toLowerCase (.getColumnLabel md (int %))))
+          cols (mapv #(keyword (str/lower-case (.getColumnLabel md (int %))))
                      (range 1 (inc (.getColumnCount md))))]
       (loop [rows []]
         (if (.next rs)
@@ -61,6 +62,9 @@
     (let [result (f)]
       (.commit conn)
       result)
+    ;; Any failure, an Error included, has to roll back before it travels
+    ;; on; it is rethrown unchanged.
+    #_{:splint/disable [lint/catch-throwable]}
     (catch Throwable t
       (.rollback conn)
       (throw t))
