@@ -67,3 +67,46 @@
     (is (= [e] (map #(get % "entry") (get-in (call nb "kajero_get" {:entry s1}) [:value "used_by"]))))
     (is (= "[{:host \"w-1\"}]" (do (call nb "kajero_migrate" {:migration m})
                                    (get-in (call nb "kajero_get" {:entry e}) [:value "data_edn"]))))))
+
+(deftest an-unambiguous-id-prefix-reads-the-entry
+  (let [nb (notebook)
+        {{:strs [entry revision]} :value} (call nb "kajero_write" {:title "Short ids" :labels {"kind" "fact"}})
+        short (subs entry 0 8)]
+    (testing "every tool that takes an entry resolves the eight characters prose quotes"
+      (is (= entry (get (:value (call nb "kajero_get" {:entry short})) "entry")))
+      (is (seq (:value (call nb "kajero_history" {:entry short}))))
+      (is (false? (:error? (call nb "kajero_revise" {:entry short :base revision :body "b"}))))
+      (is (false? (:error? (call nb "kajero_observe" {:entry short :outcome "held"})))))
+    (testing "a prefix below four characters is not an id"
+      (is (= "no-entry" (get-in (call nb "kajero_get" {:entry (subs entry 0 3)}) [:value "refused"]))))))
+
+(deftest an-id-resolves-among-the-entries
+  (let [ids ["e8da4903-1111-4000-8000-000000000000"
+             "e8da4903-2222-4000-8000-000000000000"
+             "f0ff7bc3-54d4-4a0e-a7bc-466b6a7b141e"]]
+    (is (= (nth ids 2) (k/resolve-among ids "f0ff7bc3")) "a unique prefix")
+    (is (= (nth ids 2) (k/resolve-among ids (nth ids 2))) "the full id")
+    (is (nil? (k/resolve-among ids "0123abcd")) "a prefix nobody has")
+    (is (nil? (k/resolve-among ids "f0f")) "fewer than four characters")
+    (let [e (try (k/resolve-among ids "e8da4903") (catch clojure.lang.ExceptionInfo e e))]
+      (is (= :kajero/ambiguous-id (:reason (ex-data e))))
+      (is (= (set (take 2 ids)) (set (:candidates (ex-data e)))))
+      (is (re-find #"e8da4903-1111" (ex-message e))))))
+
+(deftest a-refused-call-names-the-parameter
+  (let [nb (notebook)
+        a (get-in (call nb "kajero_write" {:title "a" :labels {"kind" "fact"}}) [:value "entry"])
+        b (get-in (call nb "kajero_write" {:title "b" :labels {"kind" "fact"}}) [:value "entry"])]
+    (testing "an unexpected parameter is named, with the ones the tool takes"
+      (let [{:keys [error? value]} (call nb "kajero_link" {:source a :kind "see-also" :target b})]
+        (is error?)
+        (is (= "unknown-parameter" (get value "refused")))
+        (is (re-find #"\bkind\b" (get value "message")))
+        (is (re-find #"source, type, target" (get value "message")))))
+    (testing "a missing required parameter is named"
+      (let [{:keys [error? value]} (call nb "kajero_link" {:source a :target b})]
+        (is error?)
+        (is (= "missing-parameter" (get value "refused")))
+        (is (re-find #"\btype\b" (get value "message")))))
+    (testing "a well-formed call still links"
+      (is (false? (:error? (call nb "kajero_link" {:source a :type "see-also" :target b})))))))

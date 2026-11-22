@@ -10,6 +10,7 @@
    survives whatever the client sends."
   (:require [cheshire.core :as json]
             [clojure.edn :as edn]
+            [clojure.string :as str]
             [kajero.core :as k]))
 
 (def ^:private entry-arg {:entry {:type "string" :description "The entry id"}})
@@ -90,8 +91,36 @@
        (catch Exception e
          (throw (ex-info (str "the data is not EDN: " (ex-message e)) {:reason :kajero/bad-edn})))))
 
-(defn call-tool
-  "Runs one tool; returns the result, or throws ex-info for a refusal."
+(defn- refuse!
+  [reason message data]
+  (throw (ex-info message (assoc data :reason reason))))
+
+(defn check-arguments!
+  "Refuses a call whose arguments the tool does not take, or that leaves
+   out one it requires, naming the parameter and the ones the tool takes:
+   a refusal about the value of a misspelt parameter would describe the
+   wrong mistake."
+  [tool args]
+  (when-let [{{:keys [properties required]} :inputSchema} (some #(when (= tool (:name %)) %) tools)]
+    (let [known (mapv name (keys properties))
+          takes (if (seq known) (str "; it takes " (str/join ", " known)) "; it takes none")]
+      (doseq [k (sort (keys args))
+              :when (not-any? #{k} known)]
+        (refuse! :kajero/unknown-parameter (str tool " has no parameter " k takes)
+                 {:tool tool :parameter k}))
+      (doseq [k required
+              :when (nil? (get args k))]
+        (refuse! :kajero/missing-parameter (str tool " needs the parameter " k takes)
+                 {:tool tool :parameter k})))))
+
+(defn- resolve-ids
+  "The arguments with every entry id resolved, so the eight-character form
+   prose quotes names its entry - see kajero.core/resolve-id."
+  [nb args]
+  (reduce (fn [a k] (cond-> a (string? (get a k)) (update k #(k/resolve-id nb %))))
+          args ["entry" "source" "target" "migration"]))
+
+(defn- call-checked
   [nb writer tool {:strs [selector entry title body labels evidence base outcome revision source type target data_edn migration dry_run reason]}]
   (case tool
     "kajero_search" (k/search nb selector)
@@ -112,6 +141,12 @@
     "kajero_link" (k/link! nb (merge writer {:source source :type type :target target}))
     "kajero_migrate" (k/migrate! nb migration (assoc writer :dry-run? (true? dry_run)))
     (throw (ex-info (str "unknown tool " tool) {:reason :kajero/unknown-tool}))))
+
+(defn call-tool
+  "Runs one tool; returns the result, or throws ex-info for a refusal."
+  [nb writer tool args]
+  (check-arguments! tool args)
+  (call-checked nb writer tool (resolve-ids nb args)))
 
 (defn- refusal-text
   [e]

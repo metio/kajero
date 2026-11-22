@@ -91,6 +91,37 @@
 
 ;; ------------------------------------------------------------------ reads
 
+(def ^:private min-prefix
+  "The shortest id prefix taken as an id; prose and tik quote eight."
+  4)
+
+(defn resolve-among
+  "The id in `ids` that `id` names: the id itself, or the one id it is a
+   prefix of, at least four characters long. nil when nothing fits;
+   ex-info {:reason :kajero/ambiguous-id :candidates [...]} when more than
+   one does."
+  [ids id]
+  (let [id (some-> id str/trim)]
+    (cond
+      (str/blank? id) nil
+      (some #{id} ids) id
+      (< (count id) min-prefix) nil
+      :else (let [fits (vec (sort (filter #(str/starts-with? % id) ids)))]
+              (case (count fits)
+                0 nil
+                1 (first fits)
+                (refuse! :kajero/ambiguous-id
+                         (str "the id " id " fits " (count fits) " entries: " (str/join ", " fits))
+                         {:id id :candidates fits}))))))
+
+(declare entry-ids)
+
+(defn resolve-id
+  "The entry id `id` names in the notebook - see resolve-among - or `id`
+   unchanged when it names none, so the caller's own refusal reports it."
+  [nb id]
+  (or (resolve-among (entry-ids nb) id) id))
+
 (defn- revisions-of [nb entry] (store/revisions (:store nb) entry))
 (defn- observations-of [nb entry] (store/observations (:store nb) entry))
 (defn- links-of [nb entry] (store/links (:store nb) entry))
