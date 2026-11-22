@@ -250,3 +250,12 @@
                                                               "reason" "forged"} true)))
         "a retirement from another site is refused")
     (is (not (contains? (k/entry nb entry) :retired)))))
+
+(deftest the-held-badge-shows-its-count-as-a-digit
+  (let [nb (notebook)
+        {:keys [entry]} (k/write! nb {:title "Velero runs at 02:00" :labels {"kind" "fact"} :actor "claude"})
+        badge #(re-find #"held \S+?</span>" (:body (get-page nb (str "/e/" entry))))]
+    (is (= "held 0</span>" (badge)))
+    (k/observe! nb entry {:outcome "held" :evidence ["kubectl get schedules"] :actor "claude"})
+    (is (= "held 1</span>" (badge)))
+    (is (not (str/includes? (:body (get-page nb (str "/e/" entry))) "𝍸")))))

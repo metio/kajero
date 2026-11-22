@@ -98,7 +98,6 @@ border:1px solid var(--rule);display:inline-flex;gap:.35rem;align-items:center}
 .badge.held{color:var(--held)}.badge.failed,.badge.disputed{color:var(--failed);border-color:color-mix(in srgb,var(--failed) 45%,transparent)}
 .badge.stale{color:var(--stale);border-color:color-mix(in srgb,var(--stale) 45%,transparent)}
 .badge.unsigned{color:var(--muted)}.badge.retired{color:var(--muted)}.retired{color:var(--muted)}
-.tally{letter-spacing:.08em}
 .group{margin-top:2rem}.group>h2{font-family:ui-monospace,Menlo,monospace;font-size:.9rem;
 text-transform:uppercase;letter-spacing:.12em;color:var(--muted);border-bottom:1px solid var(--rule);padding-bottom:.4rem}
 .row{display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-start}
@@ -175,13 +174,10 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
    (for [[key value] (sort labels)]
      [:a.chip {:href (view-href (str "label:" key "=" value))} [:b key "="] value])])
 
-(defn- tally [n]
-  (str (str/join (repeat (quot n 5) "𝍸 ")) (str/join (repeat (mod n 5) "|"))))
-
 (defn- standing [{:keys [held failed last-held disputed? stale?]} signed?]
   [:div.standing
    [:span.badge.held {:title (str "independent held observations" (when last-held (str ", last " (when-str last-held))))}
-    "held " [:span.tally (if (pos? held) (tally held) "0")]]
+    "held " held]
    (when (pos? failed) [:span.badge.failed "failed " failed])
    (when disputed? [:span.badge.disputed "disputed"])
    (when stale? [:span.badge.stale "stale"])
