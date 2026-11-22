@@ -53,12 +53,20 @@ kajero_search {"selector": "label:system=calico ~apiservices"}
 
 Selector terms, all of which must hold, each optionally prefixed `not`:
 `label:key`, `label:key=value`, `actor=name`, `ticket=<tik ticket id>`,
+`path=<repository path>` (the title, body or evidence names that file),
 `link=<entry id>` (linked to that entry, in either direction),
 `link:<type>=<entry id>` (linked by `supersedes`, `contradicts` or
 `see-also`), `schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
 `unsigned`, `superseded`, `retired`, and `~text` (or a bare word) for title,
 body, labels and data. It is tik's `--where` grammar. Retired entries are
 left out unless the selector names `retired`.
+
+Before opening a file, search for it with `path=`: two paths name the same
+file when one ends with the other at a segment boundary, so
+`path=helm-charts/cluster-info/templates/_cert-issuer.tpl` finds an entry
+that cites `templates/_cert-issuer.tpl`, and `path=_cert-issuer.tpl` finds
+both. Name the files an entry is about by their path, so the next reader
+finds it this way.
 
 With text terms, the best match comes first, and each result carries
 `matches`: per term, the field it matched in (`title`, `labels`, `body` or
