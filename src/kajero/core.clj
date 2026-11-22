@@ -27,7 +27,7 @@
 
 (defn- now ^Instant [] (or *now* (Instant/now)))
 
-(def link-types #{"supersedes" "see-also" "contradicts"})
+(def link-types select/link-types)
 
 (defn notebook
   "{:path \"notes.db\"} for SQLite or {:dir \"notes/\"} for flat files, with
@@ -175,8 +175,11 @@
         (assoc :tickets (tickets nb (concat (revisions-of nb id) (observations-of nb id)))))))
 
 (defn- row
-  [{:keys [title body labels standing signed? superseded? retired actors ticket-ids outdated-schema?] :as v}]
+  [{:keys [entry title body labels links standing signed? superseded? retired actors ticket-ids outdated-schema?] :as v}]
   {:labels labels
+   :links (into #{} (map (fn [{:keys [source type target]}]
+                           [type (if (= entry source) target source)]))
+                links)
    :data (:data v)
    :schema-revision (get-in v [:schema :revision])
    :outdated-schema? outdated-schema?

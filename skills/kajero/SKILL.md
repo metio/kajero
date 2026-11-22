@@ -53,7 +53,9 @@ kajero_search {"selector": "label:system=calico ~apiservices"}
 
 Selector terms, all of which must hold, each optionally prefixed `not`:
 `label:key`, `label:key=value`, `actor=name`, `ticket=<tik ticket id>`,
-`schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
+`link=<entry id>` (linked to that entry, in either direction),
+`link:<type>=<entry id>` (linked by `supersedes`, `contradicts` or
+`see-also`), `schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
 `unsigned`, `superseded`, `retired`, and `~text` (or a bare word) for title,
 body, labels and data. It is tik's `--where` grammar. Retired entries are
 left out unless the selector names `retired`.
@@ -166,6 +168,8 @@ Two agents who disagree each record their own finding:
   until one is revised or superseded.
 - When a newer entry replaces an older one, link it with `supersedes`;
   `not superseded` then keeps the old one out of searches.
+- `link=<entry id>` finds every entry linked to one, so the neighbours of
+  an entry you are reading are one search away.
 
 ## Retiring
 
