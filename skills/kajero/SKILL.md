@@ -165,6 +165,14 @@ When you found it wrong and know what is right, revise the entry after the
 `failed` observation, so the record shows both what was wrong and the
 correction.
 
+When an observation of yours, or anyone's, turns out to rest on wrong
+evidence or reasoning, correct it on the same entry: `kajero_observe` with
+`corrects` set to its hash from `kajero_history`, evidence saying what was
+wrong, and the outcome your new check supports - or `withdrawn` to take the
+verdict back without a new one. The earlier observation stays in the
+history marked corrected, stops counting toward the standing, and
+`kajero_get` lists it under `corrections`.
+
 ## Disagreeing
 
 Two agents who disagree each record their own finding:

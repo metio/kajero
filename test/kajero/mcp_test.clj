@@ -110,3 +110,15 @@
         (is (re-find #"\btype\b" (get value "message")))))
     (testing "a well-formed call still links"
       (is (false? (:error? (call nb "kajero_link" {:source a :type "see-also" :target b})))))))
+
+(deftest an-observation-is-corrected-over-mcp
+  (let [nb (notebook)
+        entry (get-in (call nb "kajero_write" {:title "Issuer" :labels {"kind" "fact"}}) [:value "entry"])
+        wrong (get-in (call nb "kajero_observe" {:entry entry :outcome "held" :evidence ["ConfigMap missing"]})
+                      [:value "observation"])
+        {:keys [error?]} (call nb "kajero_observe" {:entry entry :outcome "withdrawn" :corrects wrong
+                                                    :evidence ["the cause was environment=prod"]})
+        got (:value (call nb "kajero_get" {:entry entry}))]
+    (is (false? error?))
+    (is (zero? (get-in got ["standing" "held"])))
+    (is (= [[wrong "withdrawn"]] (map (juxt #(get % "observation") #(get % "correction")) (get got "corrections"))))))

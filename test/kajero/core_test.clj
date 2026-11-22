@@ -225,3 +225,52 @@
     (is (= #{other} (ids "path=_helpers.tpl")))
     (is (= #{other} (ids "label:kind not path=_cert-issuer.tpl")))
     (is (= :select/bad-term (refusal #(k/search nb "path="))))))
+
+(deftest a-later-observation-corrects-an-earlier-one
+  (let [nb (notebook)
+        {:keys [entry]} (at "2026-11-01T00:00:00Z" (k/write! nb gotcha))
+        {wrong :observation} (at "2026-11-02T00:00:00Z"
+                                 (k/observe! nb entry {:outcome "failed" :actor "claude"
+                                                       :evidence ["staging issuer: the ConfigMap is missing"]}))]
+    (is (true? (get-in (k/entry nb entry) [:standing :disputed?])))
+    (testing "the correction replaces the earlier verdict in the standing"
+      (let [{fix :observation} (at "2026-11-03T00:00:00Z"
+                                   (k/observe! nb entry {:outcome "held" :corrects wrong :actor "claude"
+                                                         :evidence ["environment=prod was passed instead of production"]}))
+            e (at "2026-11-04T00:00:00Z" (k/entry nb entry))]
+        (is (false? (get-in e [:standing :disputed?])))
+        (is (= 1 (get-in e [:standing :held])))
+        (testing "a reader of the entry sees what was corrected, by what, and why"
+          (is (= [{:observation wrong :outcome "failed" :corrected-by fix :correction "held"
+                   :evidence ["environment=prod was passed instead of production"]}]
+                 (mapv #(select-keys % [:observation :outcome :corrected-by :correction :evidence])
+                       (:corrections e)))))
+        (testing "history keeps both and marks the corrected one"
+          (let [obs (filter #(= :observation (:kind %)) (k/history nb entry))]
+            (is (= 2 (count obs)))
+            (is (= fix (:corrected-by (first (filter #(= wrong (:hash %)) obs)))))
+            (is (= wrong (:corrects (first (filter #(= fix (:hash %)) obs)))))))))))
+
+(deftest an-observation-can-be-withdrawn
+  (let [nb (notebook)
+        {:keys [entry]} (k/write! nb gotcha)
+        {held :observation} (k/observe! nb entry {:outcome "held" :evidence ["read it"] :actor "claude"})]
+    (is (= 1 (get-in (k/entry nb entry) [:standing :held])))
+    (testing "withdrawn needs the observation it withdraws and evidence"
+      (is (= :kajero/bad-outcome (refusal #(k/observe! nb entry {:outcome "withdrawn" :evidence ["x"] :actor "claude"}))))
+      (is (= :kajero/no-evidence (refusal #(k/observe! nb entry {:outcome "withdrawn" :corrects held :actor "claude"})))))
+    (k/observe! nb entry {:outcome "withdrawn" :corrects held :evidence ["reading is not a check"] :actor "claude"})
+    (is (zero? (get-in (k/entry nb entry) [:standing :held])))
+    (is (= {:outcome "held" :correction "withdrawn"}
+           (select-keys (first (:corrections (k/entry nb entry))) [:outcome :correction])))))
+
+(deftest a-correction-names-an-observation-of-this-entry-once
+  (let [nb (notebook)
+        {a :entry} (k/write! nb gotcha)
+        {b :entry} (k/write! nb (assoc gotcha :title "b"))
+        {obs :observation} (k/observe! nb a {:outcome "held" :evidence ["x"] :actor "claude"})]
+    (is (= :kajero/no-observation (refusal #(k/observe! nb b {:outcome "held" :corrects obs :evidence ["y"] :actor "claude"}))))
+    (is (= :kajero/no-observation (refusal #(k/observe! nb a {:outcome "held" :corrects "sha256-00" :evidence ["y"] :actor "claude"}))))
+    (k/observe! nb a {:outcome "failed" :corrects obs :evidence ["y"] :actor "claude"})
+    (is (= :kajero/already-corrected
+           (refusal #(k/observe! nb a {:outcome "held" :corrects obs :evidence ["z"] :actor "claude"}))))))
