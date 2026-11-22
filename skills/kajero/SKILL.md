@@ -123,6 +123,17 @@ a `kind=migration` entry whose data is
 on the old schema or nothing. `outdated-schema` finds entries checked
 against an older revision of their schema.
 
+## Entry ids
+
+Every tool that takes an entry - `kajero_get`, `kajero_history`,
+`kajero_revise`, `kajero_observe`, `kajero_link` and the rest - accepts the
+full uuid or any prefix of four or more characters that fits exactly one
+entry, such as the eight-character form prose and tik quote. A prefix that
+fits several is refused with `ambiguous-id` and lists them. A call with a
+parameter the tool does not take, or without one it requires, is refused
+with `unknown-parameter` or `missing-parameter`, naming that parameter and
+the ones the tool takes.
+
 ## Revising
 
 `kajero_revise` needs `base`, the entry's current revision. A stale base is
