@@ -1,7 +1,8 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.web-test
-  (:require [clojure.edn :as edn]
+  (:require [cheshire.core :as json]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [kajero.core :as k]
@@ -165,3 +166,61 @@
   (is (= (str/join (repeat 32 "a")) (web/mcp-token (str (str/join (repeat 32 "a")) "\n"))))
   (is (thrown? clojure.lang.ExceptionInfo (web/mcp-token "")))
   (is (thrown? clojure.lang.ExceptionInfo (web/mcp-token "short"))))
+
+;; ------------------------------------------------- through a real server
+
+(defn- free-port []
+  (with-open [s (java.net.ServerSocket. 0)] (.getLocalPort s)))
+
+(defn- http-post [port path body & [headers]]
+  (let [request ^java.net.http.HttpRequest$Builder
+        (reduce (fn [^java.net.http.HttpRequest$Builder b [^String k ^String v]] (.header b k v))
+                (-> (java.net.http.HttpRequest/newBuilder (java.net.URI. (str "http://127.0.0.1:" port path)))
+                    (.POST (java.net.http.HttpRequest$BodyPublishers/ofString body)))
+                headers)
+        response (.send (java.net.http.HttpClient/newHttpClient) (.build request)
+                        (java.net.http.HttpResponse$BodyHandlers/ofString))]
+    {:status (.statusCode response) :body (.body response)}))
+
+(defmacro ^{:private true :clj-kondo/lint-as 'clojure.core/let} with-server [[port nb] & body]
+  `(let [~port (free-port)
+         server# (web/start! ~nb writer ~port {:token (str/join (repeat 32 "k")) :writer {:actor "claude"}})]
+     (try (let [res# (do ~@body)] res#) (finally (.stop server# 0)))))
+
+(defn- mcp-write [port args]
+  (http-post port "/mcp"
+             (json/generate-string {:jsonrpc "2.0" :id 1 :method "tools/call"
+                                    :params {:name "kajero_write" :arguments args}})
+             [["Authorization" (str "Bearer " (str/join (repeat 32 "k")))]
+              ["Content-Type" "application/json"]]))
+
+(deftest an-mcp-body-is-json-and-never-url-decoded
+  (let [nb (notebook)]
+    (with-server [port nb]
+      (let [{:keys [status body]} (mcp-write port {:title "printf %s at 100%" :body "a %zz escape and 2+2"
+                                                   :labels {"kind" "fact"}})]
+        (is (= 200 status) body)
+        (let [entry (get (json/parse-string (get-in (json/parse-string body) ["result" "content" 0 "text"])) "entry")
+              e (k/entry nb entry)]
+          (is (= "printf %s at 100%" (:title e)))
+          (is (= "a %zz escape and 2+2" (:body e)) "percent and plus signs arrive as written"))))))
+
+(deftest a-page-form-that-is-not-url-encoded-is-refused-not-crashed
+  (let [nb (notebook)]
+    (with-server [port nb]
+      (is (= 400 (:status (http-post port "/new" "title=%zz" [["Origin" (str "http://127.0.0.1:" port)]
+                                                              ["Content-Type" "application/x-www-form-urlencoded"]])))))))
+
+(deftest every-request-and-every-internal-error-reaches-the-log
+  (let [nb (notebook)
+        lines (atom [])]
+    (with-redefs [web/log! (fn [& parts] (swap! lines conj (str/join " " parts)))]
+      (with-server [port nb]
+        (http-post port "/new" "title=%zz" [["Origin" (str "http://127.0.0.1:" port)]])
+        (with-redefs [web/respond (fn [& _] (throw (ex-info "boom" {})))]
+          (http-post port "/new" "title=x" [["Origin" (str "http://127.0.0.1:" port)]]))))
+    (is (some #(re-find #"^POST /new 400 \d+ms$" %) @lines))
+    (is (some #(re-find #"^POST /new 500 \d+ms$" %) @lines))
+    (is (some #(and (str/includes? % "internal error on POST /new") (str/includes? % "boom")) @lines)
+        "the stack trace is logged")
+    (is (not-any? #(str/includes? % "title=") @lines) "bodies and queries stay out of the log")))

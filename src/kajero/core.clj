@@ -56,6 +56,17 @@
   [reason message data]
   (throw (ex-info message (assoc data :reason reason))))
 
+(defn- evidence-list
+  "Evidence as a vector of strings. One string is one item: a client that
+   sends a bare string instead of a list means one piece of evidence, and
+   taking it apart into characters would store nonsense."
+  [evidence]
+  (cond
+    (nil? evidence) []
+    (string? evidence) [evidence]
+    (and (sequential? evidence) (every? string? evidence)) (vec evidence)
+    :else (refuse! :kajero/bad-evidence "evidence is a list of strings" {:evidence evidence})))
+
 (defn- seal
   "The signature a write carries, after checking it; nil for an unsigned
    write the notebook accepts."
@@ -267,10 +278,10 @@
   [nb {:keys [title body labels evidence actor key] :as opts}]
   (check-actor! actor)
   (check-content! {:title title :labels labels})
-  (check-tickets! nb evidence)
+  (check-tickets! nb (evidence-list evidence))
   (let [id (str (random-uuid))
         base-rec (cond-> {:entry id :seq 1 :base nil :title title :body (or body "") :labels labels
-                          :evidence (vec evidence) :actor actor :at (str (now))}
+                          :evidence (evidence-list evidence) :actor actor :at (str (now))}
                    (some? (:data opts)) (assoc :data (:data opts)))
         {schema-ref :ref} (check-data! nb base-rec nil)
         rec (cond-> base-rec schema-ref (assoc :schema schema-ref))
@@ -286,7 +297,7 @@
    current revision, so two writers can not overwrite each other unseen."
   [nb id {:keys [base title body labels evidence actor key] :as opts}]
   (check-actor! actor)
-  (check-tickets! nb evidence)
+  (check-tickets! nb (evidence-list evidence))
   (let [cur (or (current nb id) (refuse! :kajero/no-entry (str "no entry " id) {:entry id}))
         cur-hash (record/hash-of cur)]
     (when (not= base cur-hash)
@@ -295,7 +306,7 @@
           base-rec (cond-> {:entry id :seq (inc (:seq cur)) :base cur-hash
                             :title (or title (:title cur)) :body (or body (:body cur))
                             :labels (or labels (:labels cur))
-                            :evidence (vec evidence) :actor actor :at (str (now))}
+                            :evidence (evidence-list evidence) :actor actor :at (str (now))}
                      (some? data) (assoc :data data))
           _ (check-content! base-rec)
           {schema-ref :ref schema-warnings :warnings} (check-data! nb base-rec (get-in cur [:labels "schema"]))
@@ -318,15 +329,15 @@
   (check-actor! actor)
   (when-not (#{"held" "failed"} outcome)
     (refuse! :kajero/bad-outcome "an observation is held or failed" {:outcome outcome}))
-  (when (and (= "failed" outcome) (empty? evidence))
+  (when (and (= "failed" outcome) (empty? (evidence-list evidence)))
     (refuse! :kajero/no-evidence "a failed observation needs evidence" {}))
-  (check-tickets! nb evidence)
+  (check-tickets! nb (evidence-list evidence))
   (let [revs (into {} (map (juxt record/hash-of identity)) (revisions-of nb id))
         cur (current nb id)
         target (or revision (some-> cur record/hash-of))]
     (when-not (contains? revs target)
       (refuse! :kajero/no-revision (format "entry %s has no revision %s" id target) {:entry id}))
-    (let [rec {:entry id :revision target :outcome outcome :evidence (vec evidence)
+    (let [rec {:entry id :revision target :outcome outcome :evidence (evidence-list evidence)
                :actor actor :at (str (now))}
           hash (store/append! (:store nb) :observation rec (seal nb rec key))]
       {:observation hash :standing (:standing (entry nb id))})))
