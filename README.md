@@ -154,7 +154,22 @@ label:system=calico label:kind not disputed ~apiservices
 | `schema-revision=<hash>` | whose data was checked against that schema revision |
 | `outdated-schema` | whose data was checked against an older schema revision |
 | `disputed`, `stale`, `unsigned`, `superseded` | in that derived state |
+| `retired` | that somebody retired |
 | `~text` or a bare word | whose title, body or labels contain the text |
+
+A retired entry is left out of every selector that does not name `retired`,
+so `retired` lists the retired entries and `not retired` the others.
+
+## Retiring an entry
+
+An entry written by mistake, as a test or twice is retired: `kajero retire
+<id> --base <rev> --reason <why>` (or `kajero_retire`) writes a signed revision
+with the content unchanged and the reason recorded. Search, the label counts
+and the similar-entry check of a write leave it out; reading it by id and its
+history still work, and nothing is deleted. A revision of a retired entry
+keeps it retired. `kajero restore <id> --base <rev>` (or `kajero_restore`)
+lifts the retirement. An entry that a better one replaces is linked as
+`supersedes` instead, so the reader finds the replacement.
 
 ## Command line
 
@@ -185,7 +200,8 @@ interface only and refuses forms from other sites.
 
 `bb mcp` serves the notebook over stdio to an MCP client, with the tools
 `kajero_search`, `kajero_get`, `kajero_history`, `kajero_labels`,
-`kajero_write`, `kajero_revise`, `kajero_observe` and `kajero_link`. It reads
+`kajero_write`, `kajero_revise`, `kajero_observe`, `kajero_retire`,
+`kajero_restore`, `kajero_link` and `kajero_migrate`. It reads
 the same environment as the command line; every write names `KAJERO_ACTOR`
 and is signed with `KAJERO_KEY` when it is set.
 

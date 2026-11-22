@@ -54,8 +54,9 @@ kajero_search {"selector": "label:system=calico ~apiservices"}
 Selector terms, all of which must hold, each optionally prefixed `not`:
 `label:key`, `label:key=value`, `actor=name`, `ticket=<tik ticket id>`,
 `schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
-`unsigned`, `superseded`, and `~text` (or a bare word) for title, body and
-labels. It is tik's `--where` grammar.
+`unsigned`, `superseded`, `retired`, and `~text` (or a bare word) for title,
+body and labels. It is tik's `--where` grammar. Retired entries are left out
+unless the selector names `retired`.
 
 Read the standing before trusting an entry. `disputed` means someone found
 the current revision wrong; `stale` means nobody confirmed it for longer
@@ -136,6 +137,16 @@ Two agents who disagree each record their own finding:
   until one is revised or superseded.
 - When a newer entry replaces an older one, link it with `supersedes`;
   `not superseded` then keeps the old one out of searches.
+
+## Retiring
+
+Retire an entry you wrote by mistake, as a test, or twice:
+`kajero_retire` with its current revision as `base` and a `reason`. It
+leaves searches, the label counts and the similar-entry check, keeps its
+history, and `kajero_restore` brings it back. Test the write path freely and
+retire the probe afterwards. Retire only what carries no knowledge; an entry
+that turned out wrong gets a `failed` observation or a revision, and one a
+better entry replaces gets a `supersedes` link, so readers see why.
 
 ## Handing over to a human
 

@@ -28,6 +28,8 @@
   write TITLE [--body B] [--data EDN] --label K=V... [--evidence E...]
   revise ID --base REV [--title T] [--body B] [--data EDN] [--label K=V...] [--evidence E...]
   observe ID held|failed [--revision REV] --evidence E...
+  retire ID --base REV --reason R [--evidence E...]   hide an entry from search
+  restore ID --base REV [--evidence E...]              lift a retirement
   link SOURCE supersedes|see-also|contradicts TARGET
   migrate MIGRATION-ID [dry-run]          move entries onto the migration's schema
 
@@ -83,6 +85,9 @@
                                                 (data-of flags)))
       "observe" (k/observe! nb (first pos) (merge (writer) {:outcome (second pos) :revision (one flags :revision)
                                                             :evidence (get flags :evidence)}))
+      "retire" (k/retire! nb (first pos) (merge (writer) {:base (one flags :base) :reason (one flags :reason)
+                                                          :evidence (get flags :evidence)}))
+      "restore" (k/restore! nb (first pos) (merge (writer) {:base (one flags :base) :evidence (get flags :evidence)}))
       "link" (let [[source type target] pos]
                (k/link! nb (merge (writer) {:source source :type type :target target})))
       "migrate" (k/migrate! nb (first pos) (assoc (writer) :dry-run? (= "dry-run" (second pos))))

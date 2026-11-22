@@ -11,7 +11,7 @@
      ticket=<id>                some record cites tik:<id> as evidence
      schema-revision=<hash>     the data was checked against that schema revision
      outdated-schema            the data was checked against an older schema revision
-     disputed | stale | unsigned | superseded
+     disputed | stale | unsigned | superseded | retired
      ~text  (or a bare word)    title, body or labels contain it
 
    `compile` returns a predicate over a row
@@ -28,6 +28,7 @@
     (= term "stale") :stale?
     (= term "unsigned") :unsigned?
     (= term "superseded") :superseded?
+    (= term "retired") :retired?
 
     (str/starts-with? term "label:")
     (let [[k v] (str/split (subs term 6) #"=" 2)]
@@ -54,6 +55,14 @@
     :else
     (let [text (str/lower-case (str/replace term #"^~" ""))]
       #(str/includes? (:haystack % "") text))))
+
+(defn- terms [selector]
+  (remove #{"and" ""} (str/split (str/trim (or selector "")) #"\s+")))
+
+(defn names?
+  "Whether the selector has the term `term`, alone or after `not`."
+  [selector term]
+  (boolean (some #{term} (terms selector))))
 
 (defn compile
   [selector]
