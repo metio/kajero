@@ -209,3 +209,19 @@
     (testing "an unknown link type or a too-short id is a bad term"
       (is (= :select/bad-term (refusal #(k/search nb (str "link:likes=" hub)))))
       (is (= :select/bad-term (refusal #(k/search nb "link=abc")))))))
+
+(deftest an-entry-is-found-by-a-path-it-names
+  (let [nb (notebook)
+        short (:entry (k/write! nb (assoc gotcha :title "issuer"
+                                          :body "derived in `templates/_cert-issuer.tpl`")))
+        long (:entry (k/write! nb (assoc gotcha :title "issuer, full"
+                                         :body "see helm-charts/cluster-info/templates/_cert-issuer.tpl")))
+        cited (:entry (k/write! nb (assoc gotcha :title "in evidence" :body "no path here"
+                                          :evidence ["helm-charts/cluster-info/templates/_cert-issuer.tpl@abc123"])))
+        other (:entry (k/write! nb (assoc gotcha :title "other" :body "templates/_helpers.tpl")))
+        ids #(set (map :entry (k/search nb %)))]
+    (is (= #{short long cited} (ids "path=helm-charts/cluster-info/templates/_cert-issuer.tpl")))
+    (is (= #{short long cited} (ids "path=_cert-issuer.tpl")))
+    (is (= #{other} (ids "path=_helpers.tpl")))
+    (is (= #{other} (ids "label:kind not path=_cert-issuer.tpl")))
+    (is (= :select/bad-term (refusal #(k/search nb "path="))))))

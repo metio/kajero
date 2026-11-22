@@ -13,6 +13,7 @@
             [kajero.data :as data]
             [kajero.data-query :as dq]
             [kajero.migrate :as migrate]
+            [kajero.paths :as paths]
             [kajero.rank :as rank]
             [kajero.record :as record]
             [kajero.select :as select]
@@ -185,6 +186,7 @@
    :outdated-schema? outdated-schema?
    :actors actors
    :tickets ticket-ids
+   :paths (into (paths/cited title) (mapcat paths/cited) (cons body (:evidence v)))
    :haystack (str/lower-case (str/join " " (concat [title body (some-> (:data v) pr-str)]
                                                    (map #(str/join "=" %) labels))))
    :disputed? (:disputed? standing)

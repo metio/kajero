@@ -9,6 +9,7 @@
      label:kind=gotcha          present and equal
      actor=seb                  some revision or observation by seb
      ticket=<id>                some record cites tik:<id> as evidence
+     path=templates/a.tpl       the title, body or evidence names that file
      link=<id>                  linked to that entry, either direction
      link:see-also=<id>         linked to it by that type
      schema-revision=<hash>     the data was checked against that schema revision
@@ -29,7 +30,8 @@
    or throws ex-info {:reason :select/bad-term}."
   (:refer-clojure :exclude [compile])
   (:require [clojure.string :as str]
-            [kajero.data-query :as dq]))
+            [kajero.data-query :as dq]
+            [kajero.paths :as paths]))
 
 (defn- data-term?
   [term]
@@ -82,6 +84,12 @@
 
     (str/starts-with? term "ticket=")
     (let [id (subs term 7)] #(contains? (:tickets %) id))
+
+    (str/starts-with? term "path=")
+    (let [p (subs term 5)]
+      (when (str/blank? p)
+        (throw (ex-info (str "a path term needs a path: " term) {:reason :select/bad-term :term term})))
+      (fn [row] (boolean (some #(paths/same-file? % p) (:paths row)))))
 
     (or (str/starts-with? term "link=") (str/starts-with? term "link:"))
     (link-pred term)
