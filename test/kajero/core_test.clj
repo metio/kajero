@@ -183,3 +183,29 @@
 
 (deftest temp-files-stay-out-of-the-repository
   (is (not (.exists (io/file "notes.db")))))
+
+(deftest links-are-selectable
+  (let [nb (notebook)
+        hub (:entry (k/write! nb gotcha))
+        a (:entry (k/write! nb (assoc gotcha :title "a")))
+        b (:entry (k/write! nb (assoc gotcha :title "b")))
+        c (:entry (k/write! nb (assoc gotcha :title "c")))
+        lone (:entry (k/write! nb (assoc gotcha :title "lone")))
+        ids #(set (map :entry (k/search nb %)))]
+    (k/link! nb {:source a :type "see-also" :target hub :actor "claude"})
+    (k/link! nb {:source hub :type "see-also" :target b :actor "claude"})
+    (k/link! nb {:source c :type "supersedes" :target hub :actor "claude"})
+    (testing "link=<id> picks the entries linked to it, in either direction, not itself"
+      (is (= #{a b c} (ids (str "link=" hub)))))
+    (testing "an eight-character prefix names the entry as it does elsewhere"
+      (is (= #{a b c} (ids (str "link=" (subs hub 0 8))))))
+    (testing "link:<type>=<id> narrows to one type"
+      (is (= #{a b} (ids (str "link:see-also=" hub))))
+      (is (= #{c} (ids (str "link:supersedes=" hub))))
+      (is (= #{} (ids (str "link:contradicts=" hub)))))
+    (testing "the term composes with not, and an entry without links matches nothing"
+      (is (= #{hub lone} (ids (str "not link=" hub))))
+      (is (= #{} (ids (str "link=" lone)))))
+    (testing "an unknown link type or a too-short id is a bad term"
+      (is (= :select/bad-term (refusal #(k/search nb (str "link:likes=" hub)))))
+      (is (= :select/bad-term (refusal #(k/search nb "link=abc")))))))

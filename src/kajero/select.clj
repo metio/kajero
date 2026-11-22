@@ -9,6 +9,8 @@
      label:kind=gotcha          present and equal
      actor=seb                  some revision or observation by seb
      ticket=<id>                some record cites tik:<id> as evidence
+     link=<id>                  linked to that entry, either direction
+     link:see-also=<id>         linked to it by that type
      schema-revision=<hash>     the data was checked against that schema revision
      outdated-schema            the data was checked against an older schema revision
      disputed | stale | unsigned | superseded | retired
@@ -22,7 +24,7 @@
    term holds nowhere.
 
    `compile` returns a predicate over a row
-     {:labels {\"kind\" \"gotcha\"} :actors #{\"seb\"} :haystack \"...\" :data ...
+     {:labels {\"kind\" \"gotcha\"} :actors #{\"seb\"} :links #{[\"see-also\" id]} :haystack \"...\" :data ...
       :disputed? bool :stale? bool :unsigned? bool :superseded? bool}
    or throws ex-info {:reason :select/bad-term}."
   (:refer-clojure :exclude [compile])
@@ -32,6 +34,26 @@
 (defn- data-term?
   [term]
   (str/starts-with? term "data:"))
+
+(def link-types
+  "The types a link between two entries has."
+  #{"supersedes" "see-also" "contradicts"})
+
+(defn- link-pred
+  "link=<id> holds for an entry linked to <id> in either direction, and
+   link:<type>=<id> for one linked by that type. <id> may be a prefix of
+   four or more characters, as everywhere else an entry is named."
+  [term]
+  (let [[lhs id] (str/split term #"=" 2)
+        type (second (str/split lhs #":" 2))
+        bad #(throw (ex-info (str % ": " term) {:reason :select/bad-term :term term}))]
+    (when (and type (not (link-types type)))
+      (bad (str "a link type is one of " (str/join ", " (sort link-types)))))
+    (when (< (count (str/trim (or id ""))) 4)
+      (bad "a link term names an entry by four or more characters of its id"))
+    (fn [row] (boolean (some (fn [[t other]] (and (or (nil? type) (= type t))
+                                                  (str/starts-with? other id)))
+                             (:links row))))))
 
 (defn- term-pred
   [term]
@@ -60,6 +82,9 @@
 
     (str/starts-with? term "ticket=")
     (let [id (subs term 7)] #(contains? (:tickets %) id))
+
+    (or (str/starts-with? term "link=") (str/starts-with? term "link:"))
+    (link-pred term)
 
     (str/starts-with? term "actor=")
     (let [actor (subs term 6)] #(contains? (:actors %) actor))
