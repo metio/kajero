@@ -155,10 +155,18 @@ label:system=calico label:kind not disputed ~apiservices
 | `outdated-schema` | whose data was checked against an older schema revision |
 | `disputed`, `stale`, `unsigned`, `superseded` | in that derived state |
 | `retired` | that somebody retired |
-| `~text` or a bare word | whose title, body or labels contain the text |
+| `~text` or a bare word | whose title, body, labels or data contain the text |
 
 A retired entry is left out of every selector that does not name `retired`,
 so `retired` lists the retired entries and `not retired` the others.
+
+A search with text terms puts the best match first. Per term, a match in the
+title weighs 12, in the labels 6, in the body 2 and in the data 1, and up to
+five matches of a term in one field count, so a title naming a word outranks
+a body repeating it. Each result carries its `:score` and, per term, a
+`:matches` item with the field it matched in and a snippet of the text around
+the match. Equal scores, and searches without text, go most recently changed
+first.
 
 ## Retiring an entry
 

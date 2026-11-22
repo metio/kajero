@@ -12,6 +12,7 @@
   (:require [clojure.string :as str]
             [kajero.data :as data]
             [kajero.migrate :as migrate]
+            [kajero.rank :as rank]
             [kajero.record :as record]
             [kajero.select :as select]
             [kajero.standing :as standing]
@@ -162,18 +163,36 @@
   [nb id]
   (nil? (:retired (current nb id))))
 
+(defn- text-of
+  "The searched text of a view, by field, as kajero.rank reads it."
+  [v]
+  {:title (or (:title v) "")
+   :labels (str/join " " (map #(str/join "=" %) (sort (:labels v))))
+   :body (or (:body v) "")
+   :data (if (some? (:data v)) (pr-str (:data v)) "")})
+
 (defn search
-  "Summaries of the entries the selector picks, most recently changed first.
-   Retired entries are left out unless the selector names `retired`."
+  "Summaries of the entries the selector picks. With text terms, the best
+   match comes first - see kajero.rank - and each summary carries its
+   :score and, per term, where it matched with the text around it; ties
+   and selectors without text go most recently changed first. Retired
+   entries are left out unless the selector names `retired`."
   [nb selector]
   (let [pred (cond-> (select/compile selector)
-               (not (select/names? selector "retired")) (every-pred (complement :retired?)))]
+               (not (select/names? selector "retired")) (every-pred (complement :retired?)))
+        terms (select/text-terms selector)
+        ranked (fn [v] (if (seq terms)
+                         (let [text (text-of v)]
+                           (assoc v :score (rank/score text terms) :matches (rank/matches text terms)))
+                         v))]
     (->> (entry-ids nb)
          (map #(view nb %))
          (filter (comp pred row))
-         (sort-by :at #(compare %2 %1))
+         (map ranked)
+         (sort (fn [x y] (let [by-score (compare (:score y 0) (:score x 0))]
+                           (if (zero? by-score) (compare (:at y) (:at x)) by-score))))
          (mapv (fn [v]
-                 (-> (select-keys v [:entry :revision :title :labels :at :standing])
+                 (-> (select-keys v [:entry :revision :title :labels :at :standing :score :matches])
                      (cond-> (:retired v) (assoc :retired (:retired v)))
                      (assoc :summary (first (str/split-lines (or (:body v) ""))))))))))
 
