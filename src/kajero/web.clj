@@ -419,6 +419,12 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
           {}
           (str/split (or s "") #"&")))
 
+(defn- form-params
+  "The fields of a form body, or ::malformed when it holds an escape that is
+   not one, which no browser sends."
+  [s]
+  (try (params s) (catch IllegalArgumentException _ ::malformed)))
+
 (defn- label-lines [s]
   (not-empty (into {} (keep #(let [[k v] (map str/trim (str/split % #"=" 2))]
                                (when-not (str/blank? k) [k (or v "")])))
@@ -548,10 +554,13 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
    POST to the pages must carry this server's own Origin, which browsers
    send with every form. A process of the same local user is not stopped by
    this: it can read the signing key itself."
-  [port {:keys [host method path origin too-large?]}]
+  [port {:keys [host method path origin too-large? form]}]
   (cond
     too-large?
     {:status 413 :headers {"Content-Type" "text/plain; charset=utf-8"} :body "the request body is too large"}
+
+    (= ::malformed form)
+    {:status 400 :headers {"Content-Type" "text/plain; charset=utf-8"} :body "the form body is not URL-encoded"}
 
     (not (contains? #{(str "127.0.0.1:" port) (str "localhost:" port)} host))
     {:status 421 :headers {"Content-Type" "text/plain; charset=utf-8"} :body "this server answers only to its own address"}
@@ -580,7 +589,9 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
      :cross-site? (= "cross-site" (.getFirst headers "Sec-Fetch-Site"))
      :too-large? too-large?
      :body body
-     :form (some-> body params)}))
+     ;; Only the pages take form posts; /mcp carries JSON, in which a
+     ;; percent sign is just a character.
+     :form (when (not= "/mcp" (.getRawPath uri)) (some-> body form-params))}))
 
 (defn- send! [^HttpExchange ex {:keys [status headers body]}]
   (let [bytes (.getBytes (str body) StandardCharsets/UTF_8)
@@ -605,6 +616,26 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
       (throw (ex-info "KAJERO_SURFACES=mcp needs KAJERO_MCP_TOKEN_FILE" {})))
     s))
 
+(defn- log!
+  "A line on stderr, which the service hands to the journal."
+  [& parts]
+  (binding [*out* *err*] (apply println parts)))
+
+(defn- log-request!
+  "One line per request: method, path without its query, status and
+   milliseconds. The query is left out so search words stay out of the log."
+  [^HttpExchange ex status started]
+  (log! (.getRequestMethod ex) (.getRawPath (.getRequestURI ex)) status
+        (str (quot (- (System/nanoTime) started) 1000000) "ms")))
+
+(defn- log-error!
+  "An internal error with its stack trace; the client sees only the message,
+   so this is the server's record of it."
+  [^HttpExchange ex ^Throwable t]
+  (let [trace (java.io.StringWriter.)]
+    (.printStackTrace t (java.io.PrintWriter. trace))
+    (log! "internal error on" (.getRequestMethod ex) (.getRawPath (.getRequestURI ex)) "\n" (str trace))))
+
 (defn mcp-token
   "The bearer token in the text of a token file. A short one is refused: the
    token is all that stands between a local process and the MCP writer."
@@ -624,21 +655,27 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
     (.createContext server "/"
                     (reify HttpHandler
                       (handle [_ ex]
-                        (try
-                          (send! ex (or (let [request (exchange->request ex)]
-                                          (or (request-guard port request)
-                                              (cond
-                                                (= "/mcp" (:path request)) (mcp-endpoint nb (assoc mcp :port port) request)
-                                                (false? pages?) nil
-                                                :else (respond nb writer token request))))
-                                        {:status 404 :body (layout {:title "Not found"} [:h1 "Not found"]
-                                                                   [:p.empty "No such page or entry."])}))
-                          ;; The HTTP boundary: any failure, an Error included,
-                          ;; answers 500 instead of leaving the exchange open.
-                          #_{:splint/disable [lint/catch-throwable]}
-                          (catch Throwable t
-                            (send! ex {:status 500 :body (str "internal error: " (ex-message t))}))
-                          (finally (.close ex))))))
+                        (let [started (System/nanoTime)
+                              status (try
+                                       (let [response (or (let [request (exchange->request ex)]
+                                                            (or (request-guard port request)
+                                                                (cond
+                                                                  (= "/mcp" (:path request)) (mcp-endpoint nb (assoc mcp :port port) request)
+                                                                  (false? pages?) nil
+                                                                  :else (respond nb writer token request))))
+                                                          {:status 404 :body (layout {:title "Not found"} [:h1 "Not found"]
+                                                                                     [:p.empty "No such page or entry."])})]
+                                         (send! ex response)
+                                         (:status response 200))
+                                       ;; The HTTP boundary: any failure, an Error included,
+                                       ;; answers 500 instead of leaving the exchange open.
+                                       #_{:splint/disable [lint/catch-throwable]}
+                                       (catch Throwable t
+                                         (log-error! ex t)
+                                         (send! ex {:status 500 :body (str "internal error: " (ex-message t))})
+                                         500)
+                                       (finally (.close ex)))]
+                          (log-request! ex status started)))))
     (.start server)
     server))
 

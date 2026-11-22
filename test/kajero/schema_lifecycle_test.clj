@@ -172,3 +172,13 @@
     (nodes! nb s1 "a" [{:name "a" :cpus 1}])
     (k/revise! nb s2 {:base s2-rev :labels {"kind" "schema" "deprecated" "true"} :actor "seb"})
     (is (= :kajero/deprecated-schema (refusal #(k/migrate! nb m {:actor "claude"}))))))
+
+(deftest evidence-given-as-one-string-is-one-item
+  (let [nb (notebook)
+        {e :entry rev :revision} (k/write! nb {:title "t" :labels {"kind" "fact"} :evidence "checked it" :actor "claude"})]
+    (is (= ["checked it"] (:evidence (k/entry nb e))))
+    (k/observe! nb e {:outcome "failed" :evidence "it broke" :actor "claude"})
+    (k/revise! nb e {:base rev :body "b" :evidence "a second look" :actor "claude"})
+    (is (= ["a second look"] (:evidence (k/entry nb e))))
+    (is (= :kajero/bad-evidence (refusal #(k/write! nb {:title "t" :labels {"kind" "fact"} :evidence [1 2] :actor "claude"}))))
+    (is (= :kajero/bad-evidence (refusal #(k/write! nb {:title "t" :labels {"kind" "fact"} :evidence {:a 1} :actor "claude"}))))))
