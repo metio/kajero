@@ -155,10 +155,21 @@ label:system=calico label:kind not disputed ~apiservices
 | `outdated-schema` | whose data was checked against an older schema revision |
 | `disputed`, `stale`, `unsigned`, `superseded` | in that derived state |
 | `retired` | that somebody retired |
+| `data:field` | with a row in their data that has the field |
+| `data:field=value` | with a row in their data whose field has the value |
 | `~text` or a bare word | whose title, body, labels or data contain the text |
 
 A retired entry is left out of every selector that does not name `retired`,
 so `retired` lists the retired entries and `not retired` the others.
+
+The rows of an entry's data are the maps of a list, or the data itself when it
+is one map. A field is a key, read as a keyword or a string, and a dotted field
+follows nested maps (`data:owner.team=dns`). A value is compared with the
+field's printed form, a keyword without its colon, so `data:ttl=300` and
+`data:record=aaaa` both match, and the whole value must match. The positive
+`data:` terms of a selector must all hold in the same row, and each result
+then carries the `:rows` that hold them all; `not data:...` picks entries in
+which no row matches.
 
 A search with text terms puts the best match first. Per term, a match in the
 title weighs 12, in the labels 6, in the body 2 and in the data 1, and up to
