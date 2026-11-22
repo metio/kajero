@@ -65,12 +65,16 @@ snippets and `get` only the entries worth reading. A term is a substring,
 so a short one matches inside longer words; prefer a distinctive word.
 
 To ask about a field of the data, use `data:field=value` (or `data:field`
-for presence): `kajero_search {"selector": "data:domain=lms.example.org"}`
-returns the entries with such a row, each with only the matching `rows`, so
-there is no need to read a whole table and filter it by hand. Several
-`data:` terms must hold in the same row; a dotted field such as
-`data:owner.team` reads nested maps, and values compare as printed, a
-keyword without its colon.
+for presence). A dotted field walks maps and steps into lists:
+`kajero_search {"selector": "data:hosts.domain=lms.example.org"}` returns
+the readings with that host, each carrying only the matching host maps as
+`rows`, so there is no need to read a whole table and filter it by hand.
+Terms about one list must hold in the same element
+(`data:hosts.domain=x data:hosts.flavor=gateway` asks about host x); a term
+about the whole entry, such as `data:cluster=…`, combines with any of its
+elements. Values compare as printed, a keyword without its colon, and a
+list of plain values matches when any element does. Check the data's shape
+with `kajero_get` first if you do not know the field names.
 
 Read the standing before trusting an entry. `disputed` means someone found
 the current revision wrong; `stale` means nobody confirmed it for longer

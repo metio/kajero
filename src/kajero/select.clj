@@ -12,58 +12,32 @@
      schema-revision=<hash>     the data was checked against that schema revision
      outdated-schema            the data was checked against an older schema revision
      disputed | stale | unsigned | superseded | retired
-     data:host                  some row of the data has the field
-     data:host=w-1              some row has the field with that value
+     data:host                  the data has the field
+     data:hosts.domain=w-1      the field, through maps and lists, has the value
      ~text  (or a bare word)    title, body, labels or data contain it
 
-   The rows of an entry's data are the maps of a list, or the data itself
-   when it is one map. A field is a key, matched as a keyword or a string,
-   and a dotted field follows nested maps (data:owner.team=dns). A value is
-   compared with the field's printed form, a keyword without its colon, so
-   data:cpus=8 and data:state=ready both match. The positive data terms of
-   one selector must all hold in the same row; `not data:...` means no row
-   matches.
+   kajero.data-query says how a data: term walks the data. The positive
+   data terms of one selector must hold together - two terms about the
+   elements of one list in the same element - and `not data:...` means the
+   term holds nowhere.
 
    `compile` returns a predicate over a row
-     {:labels {\"kind\" \"gotcha\"} :actors #{\"seb\"} :haystack \"...\" :rows [...]
+     {:labels {\"kind\" \"gotcha\"} :actors #{\"seb\"} :haystack \"...\" :data ...
       :disputed? bool :stale? bool :unsigned? bool :superseded? bool}
    or throws ex-info {:reason :select/bad-term}."
   (:refer-clojure :exclude [compile])
-  (:require [clojure.string :as str]))
-
-(defn- field-value
-  [row path]
-  (reduce (fn [m seg]
-            (when (map? m)
-              (let [v (get m (keyword seg) ::none)]
-                (if (= ::none v) (get m seg) v))))
-          row
-          (str/split path #"\.")))
-
-(defn- printed [v]
-  (cond (keyword? v) (subs (str v) 1)
-        (string? v) v
-        :else (pr-str v)))
+  (:require [clojure.string :as str]
+            [kajero.data-query :as dq]))
 
 (defn- data-term?
   [term]
   (str/starts-with? term "data:"))
 
-(defn data-row-pred
-  "The predicate a data: term asks of one row of the data."
-  [term]
-  (let [[k v] (str/split (subs term 5) #"=" 2)]
-    (when (str/blank? k)
-      (throw (ex-info (str "a data term needs a field: " term) {:reason :select/bad-term :term term})))
-    (if (some? v)
-      #(let [x (field-value % k)] (and (some? x) (= v (printed x))))
-      #(some? (field-value % k)))))
-
 (defn- term-pred
   [term]
   (cond
     (data-term? term)
-    (let [p (data-row-pred term)] #(boolean (some p (:rows %))))
+    (let [q (dq/parse term)] #(boolean (seq (dq/contexts (:data %) q))))
 
     (= term "disputed") :disputed?
     (= term "stale") :stale?
@@ -111,17 +85,16 @@
        (not (str/starts-with? t "label:"))
        (not (data-term? t))))
 
-(defn rows-pred
-  "The predicate every positive data term of the selector asks of one row,
-   or nil when it has none: the rows a search returns are the ones it holds
-   for."
+(defn data-terms
+  "The positive data: terms of the selector, parsed, leaving out the ones
+   after `not`."
   [selector]
-  (loop [[t & more] (terms selector) preds []]
+  (loop [[t & more] (terms selector) acc []]
     (cond
-      (nil? t) (when (seq preds) (apply every-pred preds))
-      (= t "not") (recur (rest more) preds)
-      (data-term? t) (recur more (conj preds (data-row-pred t)))
-      :else (recur more preds))))
+      (nil? t) acc
+      (= t "not") (recur (rest more) acc)
+      (data-term? t) (recur more (conj acc (dq/parse t)))
+      :else (recur more acc))))
 
 (defn text-terms
   "The text the selector asks for, lower-cased and without `~`: its bare
@@ -136,15 +109,15 @@
 
 (defn compile
   [selector]
-  (let [same-row (rows-pred selector)]
+  (let [together (not-empty (data-terms selector))]
     (loop [[t & more] (remove #{"and"} (str/split (str/trim (or selector "")) #"\s+"))
            preds []]
       (cond
-        (nil? t) (let [preds (cond-> preds same-row (conj #(boolean (some same-row (:rows %)))))]
+        (nil? t) (let [preds (cond-> preds together (conj #(boolean (seq (dq/matching (:data %) together)))))]
                    (fn [row] (every? #(% row) preds)))
         (str/blank? t) (recur more preds)
         (= t "not") (if-let [n (first more)]
                       (let [p (term-pred n)] (recur (rest more) (conj preds (complement p))))
                       (throw (ex-info "`not` needs a term after it" {:reason :select/bad-term :term t})))
-        ;; a positive data term is checked through same-row above
+        ;; a positive data term is checked through `together` above
         :else (recur more (cond-> preds (not (data-term? t)) (conj (term-pred t))))))))

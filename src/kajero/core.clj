@@ -11,6 +11,7 @@
    checked against the actors file before anything is written."
   (:require [clojure.string :as str]
             [kajero.data :as data]
+            [kajero.data-query :as dq]
             [kajero.migrate :as migrate]
             [kajero.rank :as rank]
             [kajero.record :as record]
@@ -142,18 +143,10 @@
           (assoc :used-by (schema-users nb id)))
         (assoc :tickets (tickets nb (concat (revisions-of nb id) (observations-of nb id)))))))
 
-(defn- data-rows
-  "The rows of an entry's data: the maps of a list, or the data when it is
-   one map."
-  [data]
-  (cond (map? data) [data]
-        (sequential? data) (filterv map? data)
-        :else []))
-
 (defn- row
   [{:keys [title body labels standing signed? superseded? retired actors ticket-ids outdated-schema?] :as v}]
   {:labels labels
-   :rows (data-rows (:data v))
+   :data (:data v)
    :schema-revision (get-in v [:schema :revision])
    :outdated-schema? outdated-schema?
    :actors actors
@@ -185,13 +178,13 @@
    match comes first - see kajero.rank - and each summary carries its
    :score and, per term, where it matched with the text around it; ties
    and selectors without text go most recently changed first. With data:
-   terms, each summary carries the :rows of its data that hold every one of
-   them. Retired entries are left out unless the selector names `retired`."
+   terms, each summary carries as :rows the elements of its data they pick
+   together - see kajero.data-query. Retired entries are left out unless the selector names `retired`."
   [nb selector]
   (let [pred (cond-> (select/compile selector)
                (not (select/names? selector "retired")) (every-pred (complement :retired?)))
         terms (select/text-terms selector)
-        same-row (select/rows-pred selector)
+        data-terms (not-empty (select/data-terms selector))
         ranked (fn [v] (if (seq terms)
                          (let [text (text-of v)]
                            (assoc v :score (rank/score text terms) :matches (rank/matches text terms)))
@@ -205,7 +198,7 @@
          (mapv (fn [v]
                  (-> (select-keys v [:entry :revision :title :labels :at :standing :score :matches])
                      (cond-> (:retired v) (assoc :retired (:retired v))
-                             same-row (assoc :rows (filterv same-row (data-rows (:data v)))))
+                             data-terms (assoc :rows (dq/matching (:data v) data-terms)))
                      (assoc :summary (first (str/split-lines (or (:body v) ""))))))))))
 
 (defn history

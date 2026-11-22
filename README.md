@@ -155,21 +155,29 @@ label:system=calico label:kind not disputed ~apiservices
 | `outdated-schema` | whose data was checked against an older schema revision |
 | `disputed`, `stale`, `unsigned`, `superseded` | in that derived state |
 | `retired` | that somebody retired |
-| `data:field` | with a row in their data that has the field |
-| `data:field=value` | with a row in their data whose field has the value |
+| `data:field` | whose data has the field |
+| `data:field=value` | whose data has the field with the value |
 | `~text` or a bare word | whose title, body, labels or data contain the text |
 
 A retired entry is left out of every selector that does not name `retired`,
 so `retired` lists the retired entries and `not retired` the others.
 
-The rows of an entry's data are the maps of a list, or the data itself when it
-is one map. A field is a key, read as a keyword or a string, and a dotted field
-follows nested maps (`data:owner.team=dns`). A value is compared with the
-field's printed form, a keyword without its colon, so `data:ttl=300` and
-`data:record=aaaa` both match, and the whole value must match. The positive
-`data:` terms of a selector must all hold in the same row, and each result
-then carries the `:rows` that hold them all; `not data:...` picks entries in
-which no row matches.
+A data field is a dotted path of keys, each read as a keyword or a string. A
+step into a map reads the key; a step into a list tries every map in it, so
+`data:hosts.domain=lms.example.org` matches a reading with that host among its
+`:hosts`, and when the data is itself a list, each of its maps is tried. A
+value is compared with the field's printed form, a keyword without its colon,
+so `data:ttl=300` and `data:record=aaaa` both match; the whole value must
+match, and a list of plain values matches when any element does.
+
+The positive `data:` terms of a selector must hold together: two terms about
+the elements of one list must hold in the same element, so
+`data:hosts.domain=pad.example.org data:hosts.flavor=gateway` asks whether
+that host is a gateway host, while a term about the whole reading, such as
+`data:cluster=kube.example.org`, holds for each of its hosts. Each result
+carries as `:rows` the deepest elements where all of them hold - the matching
+hosts, not the whole reading - and `not data:...` picks entries in which the
+term holds nowhere.
 
 A search with text terms puts the best match first. Per term, a match in the
 title weighs 12, in the labels 6, in the body 2 and in the data 1, and up to
