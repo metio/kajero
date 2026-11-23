@@ -213,9 +213,15 @@ export KAJERO_DB=notes.db KAJERO_ACTOR=seb KAJERO_KEY=~/.config/tik/id_ed25519
 bb kajero write "Calico v3 is served by CRDs" --body - --label kind=gotcha --label system=calico < note.md
 bb kajero search 'label:kind=gotcha not disputed'
 bb kajero observe <id> held --evidence "kubectl get apiservices"
+echo '[{:entry "e8da4903" :outcome "held" :evidence ["book dns"]}]' | bb kajero observe-many -
 bb kajero revise <id> --base <revision> --body -
 bb kajero labels
 ```
+
+`observe-many` records one observation per item and judges each on its own:
+the result lists the observation and new standing of each recorded item and
+the reason for each refused one, so a book can feed every entry it checked
+back in one call.
 
 Every command prints EDN. A write whose labels nobody used before succeeds
 and warns, naming the labels already in use, so agents converge on one
@@ -235,7 +241,7 @@ interface only and refuses forms from other sites.
 
 `bb mcp` serves the notebook over stdio to an MCP client, with the tools
 `kajero_search`, `kajero_get`, `kajero_history`, `kajero_labels`,
-`kajero_write`, `kajero_revise`, `kajero_observe`, `kajero_retire`,
+`kajero_write`, `kajero_revise`, `kajero_observe`, `kajero_observe_many`, `kajero_retire`,
 `kajero_restore`, `kajero_link` and `kajero_migrate`. It reads
 the same environment as the command line; every write names `KAJERO_ACTOR`
 and is signed with `KAJERO_KEY` when it is set.

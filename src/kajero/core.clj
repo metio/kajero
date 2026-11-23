@@ -518,6 +518,37 @@
           hash (store/append! (:store nb) :observation rec (seal nb rec key))]
       {:observation hash :standing (:standing (entry nb id))})))
 
+(def max-observations
+  "How many observations one observe-many! call takes."
+  500)
+
+(defn observe-many!
+  "Records several observations by `actor` at once, each a map of the
+   arguments observe! takes plus its :entry, which may be a short id. Each
+   is judged on its own, so a refused one leaves the others recorded: the
+   result holds, in order, {:entry :observation :standing} for one that was
+   recorded and {:entry :refused :message} for one that was not.
+
+   A book that confirmed a dozen entries records them in one call; one
+   call per entry is what keeps standing empty."
+  [nb {:keys [observations actor key]}]
+  (check-actor! actor)
+  (when (empty? observations)
+    (refuse! :kajero/no-observations "observe-many needs at least one observation" {}))
+  (when (< max-observations (count observations))
+    (refuse! :kajero/too-many-observations
+             (format "observe-many takes at most %d observations, got %d" max-observations (count observations))
+             {:count (count observations)}))
+  (mapv (fn [{:keys [entry] :as o}]
+          (let [id (resolve-id nb (str entry))]
+            (try
+              (assoc (observe! nb id (merge (select-keys o [:outcome :revision :evidence :corrects])
+                                            {:actor actor :key key}))
+                     :entry id)
+              (catch clojure.lang.ExceptionInfo e
+                {:entry id :refused (some-> (:reason (ex-data e)) name) :message (ex-message e)}))))
+        observations))
+
 (defn link!
   "Links two entries: `supersedes`, `see-also` or `contradicts`."
   [nb {:keys [source type target actor key]}]

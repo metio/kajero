@@ -169,6 +169,15 @@ evidence, and it counts for nothing.
 - `failed`: your check contradicts it. Evidence is required, and the entry
   shows as disputed until a new revision answers.
 
+A check that covered several entries - a gumshoe book, a survey, a session
+that re-verified what it read - records them all in one call with
+`kajero_observe_many`: one item per entry, each with its own outcome and
+evidence. Each item is judged on its own, so a refused one (a missing
+revision, a `failed` without evidence) leaves the rest recorded, and the
+result names the reason. From a book or script, `kajero observe-many -`
+reads the same items as an EDN list on stdin. Feed every confirmation back
+this way; standing stays empty when each costs a call.
+
 When you found it wrong and know what is right, revise the entry after the
 `failed` observation, so the record shows both what was wrong and the
 correction.

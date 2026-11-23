@@ -62,6 +62,19 @@
                                       :corrects {:type "string" :description "the hash of the earlier observation this one corrects"}}
                                      evidence-arg)
                   :required ["entry" "outcome"]}}
+   {:name "kajero_observe_many"
+    :description "Record several observations in one call, as kajero_observe does for one: each item names its entry (a short id is fine), its outcome and its evidence, and may name a revision or the observation it corrects. Use it to feed a book run or a survey back as standing: one call for every entry the run confirmed or contradicted. Each item is judged on its own, so a refused one leaves the others recorded; the result lists, in order, the observation and new standing of each recorded item and the reason for each refused one. At most 500 items."
+    :inputSchema {:type "object"
+                  :properties {:observations
+                               {:type "array"
+                                :items {:type "object"
+                                        :properties (merge entry-arg
+                                                           {:outcome {:type "string" :enum ["held" "failed" "withdrawn"]}
+                                                            :revision {:type "string"}
+                                                            :corrects {:type "string"}}
+                                                           evidence-arg)
+                                        :required ["entry" "outcome"]}}}
+                  :required ["observations"]}}
    {:name "kajero_retire"
     :description "Retire an entry written by mistake, as a test, or as a duplicate: a signed revision on top of base that keeps its content and history and records the reason. Search, labels and the similar-entry check leave it out unless the selector names `retired`; kajero_get still reads it. kajero_restore lifts it. When a better entry replaces it, link supersedes instead."
     :inputSchema {:type "object"
@@ -121,8 +134,33 @@
   (reduce (fn [a k] (cond-> a (string? (get a k)) (update k #(k/resolve-id nb %))))
           args ["entry" "source" "target" "migration"]))
 
+(def ^:private observation-keys #{"entry" "outcome" "revision" "evidence" "corrects"})
+
+(defn- observe-many
+  "Observes each item; an item naming a parameter an observation does not
+   take is refused alone, as a misspelt outcome would otherwise be read as
+   a missing one."
+  [nb writer items]
+  (when-not (sequential? items)
+    (refuse! :kajero/no-observations "observations is a list of observations" {}))
+  (let [bad (fn [item] (first (remove observation-keys (keys item))))
+        checked (mapv (fn [item]
+                        (if-let [k (and (map? item) (bad item))]
+                          {::refused {:entry (get item "entry") :refused "unknown-parameter"
+                                      :message (str "an observation has no parameter " k "; it takes "
+                                                    (str/join ", " (sort observation-keys)))}}
+                          (into {} (map (fn [[k v]] [(keyword k) v])) (when (map? item) item))))
+                      items)
+        recorded (when-let [ok (seq (remove ::refused checked))]
+                   (k/observe-many! nb (assoc writer :observations (vec ok))))]
+    (loop [[c & more] checked rs recorded acc []]
+      (cond
+        (nil? c) acc
+        (::refused c) (recur more rs (conj acc (::refused c)))
+        :else (recur more (rest rs) (conj acc (first rs)))))))
+
 (defn- call-checked
-  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision corrects source type target data_edn migration dry_run reason]}]
+  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision corrects source type target data_edn migration dry_run reason observations]}]
   (case tool
     "kajero_search" (k/search nb selector)
     "kajero_get" (let [e (or (k/entry nb entry) (throw (ex-info (str "no entry " entry) {:reason :kajero/no-entry})))]
@@ -138,6 +176,7 @@
                                                (when data_edn {:data (read-edn data_edn)})))
     "kajero_observe" (k/observe! nb entry (merge writer {:outcome outcome :revision revision :evidence evidence
                                                          :corrects corrects}))
+    "kajero_observe_many" (observe-many nb writer observations)
     "kajero_retire" (k/retire! nb entry (merge writer {:base base :reason reason :evidence evidence}))
     "kajero_restore" (k/restore! nb entry (merge writer {:base base :evidence evidence}))
     "kajero_link" (k/link! nb (merge writer {:source source :type type :target target}))
