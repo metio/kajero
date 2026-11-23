@@ -61,6 +61,14 @@ Selector terms, all of which must hold, each optionally prefixed `not`:
 body, labels and data. It is tik's `--where` grammar. Retired entries are
 left out unless the selector names `retired`.
 
+Join terms with `|` to accept any of them: `calico|coredns` finds entries
+holding either word, and `label:kind=gotcha|label:kind=fact` either kind.
+Reach for it when a topic's wording is a guess. Two loose words as separate
+terms must both match, and often find nothing where either alone finds
+plenty, while `cert-manager|certificate|issuer` returns the union, with the
+entries holding more of the words first. `not a|b` excludes entries holding
+any of them. A `data:` term cannot be one of the alternatives.
+
 Before opening a file, search for it with `path=`: two paths name the same
 file when one ends with the other at a segment boundary, so
 `path=helm-charts/cluster-info/templates/_cert-issuer.tpl` finds an entry

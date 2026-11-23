@@ -18,6 +18,14 @@
      data:host                  the data has the field
      data:hosts.domain=w-1      the field, through maps and lists, has the value
      ~text  (or a bare word)    title, body, labels or data contain it
+     a|b|c                      any of the terms holds: `calico|coredns`,
+                                `label:kind=gotcha|label:kind=fact`
+
+   An alternation is one term among the ANDed ones, and `not a|b` holds
+   when none of them does. Its parts may be any term except a data: term,
+   whose terms must hold together in one element, which a choice between
+   them cannot promise. The text alternatives all count towards ranking, so
+   an entry holding more of them comes first.
 
    kajero.data-query says how a data: term walks the data. The positive
    data terms of one selector must hold together - two terms about the
@@ -33,9 +41,22 @@
             [kajero.data-query :as dq]
             [kajero.paths :as paths]))
 
+(defn- alternation? [term] (str/includes? term "|"))
+
 (defn- data-term?
   [term]
-  (str/starts-with? term "data:"))
+  (and (str/starts-with? term "data:") (not (alternation? term))))
+
+(defn- alternatives
+  "The parts of an alternation, refusing an empty part or a data: term."
+  [term]
+  (let [parts (str/split term #"\|" -1)
+        bad #(throw (ex-info (str % ": " term) {:reason :select/bad-term :term term}))]
+    (when (some str/blank? parts)
+      (bad "an alternation has an empty part"))
+    (when (some #(str/starts-with? % "data:") parts)
+      (bad "a data: term cannot be one alternative among others"))
+    parts))
 
 (def link-types
   "The types a link between two entries has."
@@ -60,6 +81,10 @@
 (defn- term-pred
   [term]
   (cond
+    (alternation? term)
+    (let [preds (mapv term-pred (alternatives term))]
+      (fn [row] (boolean (some #(% row) preds))))
+
     (data-term? term)
     (let [q (dq/parse term)] #(boolean (seq (dq/contexts (:data %) q))))
 
@@ -131,14 +156,17 @@
 
 (defn text-terms
   "The text the selector asks for, lower-cased and without `~`: its bare
-   words and ~terms, leaving out the ones after `not`."
+   words and ~terms, each text alternative of an alternation among them,
+   leaving out the ones after `not`."
   [selector]
-  (loop [[t & more] (terms selector) acc []]
-    (cond
-      (nil? t) acc
-      (= t "not") (recur (rest more) acc)
-      (text-term? t) (recur more (conj acc (str/lower-case (str/replace t #"^~" ""))))
-      :else (recur more acc))))
+  (letfn [(text [t] (str/lower-case (str/replace t #"^~" "")))]
+    (loop [[t & more] (terms selector) acc []]
+      (cond
+        (nil? t) acc
+        (= t "not") (recur (rest more) acc)
+        (alternation? t) (recur more (into acc (map text (filter text-term? (alternatives t)))))
+        (text-term? t) (recur more (conj acc (text t)))
+        :else (recur more acc)))))
 
 (defn compile
   [selector]
