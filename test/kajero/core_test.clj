@@ -91,6 +91,38 @@
       (is (= "2026-11-04T00:00:00Z" (:last-held standing)))
       (is (false? (:disputed? standing))))))
 
+(deftest one-call-observes-several-entries
+  (let [nb (notebook)
+        ids (vec (for [t ["CoreDNS caches for 30s" "Calico v3 is CRD-backed" "cert-manager issues from ACME"]]
+                   (:entry (at "2026-11-01T00:00:00Z" (k/write! nb {:title t :labels {"kind" "fact"} :actor "seb"})))))
+        results (at "2026-11-02T00:00:00Z"
+                    (k/observe-many! nb {:actor "claude"
+                                         :observations [{:entry (ids 0) :outcome "held" :evidence ["book dns"]}
+                                                        {:entry (ids 1) :outcome "held" :evidence ["book calico"]}
+                                                        {:entry (ids 2) :outcome "failed" :evidence ["ACME is off"]}]}))]
+    (testing "three observations yield three observations and three updated standings"
+      (is (= ids (mapv :entry results)))
+      (is (every? (comp string? :observation) results))
+      (is (= [1 1 0] (mapv #(get-in % [:standing :held]) results)))
+      (is (= [0 0 1] (mapv #(get-in (k/entry nb %) [:standing :failed]) ids))))
+    (testing "each observation is judged on its own, and a refused one does not stop the rest"
+      (let [[ok missing no-evidence] (k/observe-many! nb {:actor "claude"
+                                                          :observations [{:entry (subs (ids 0) 0 8) :outcome "held"}
+                                                                         {:entry "00000000-0000-0000-0000-000000000000" :outcome "held"}
+                                                                         {:entry (ids 1) :outcome "failed"}]})]
+        (is (= (ids 0) (:entry ok)) "a short id resolves")
+        (is (string? (:observation ok)))
+        (is (= "no-revision" (:refused missing)))
+        (is (= "no-evidence" (:refused no-evidence)))
+        (is (= 2 (count (filter #(= :observation (:kind %)) (k/history nb (ids 0))))))
+        (is (zero? (get-in (k/entry nb (ids 1)) [:standing :failed])))))
+    (testing "the call itself is refused without an actor, without observations, or with too many"
+      (is (= :kajero/no-actor (refusal #(k/observe-many! nb {:observations [{:entry (ids 0) :outcome "held"}]}))))
+      (is (= :kajero/no-observations (refusal #(k/observe-many! nb {:actor "claude" :observations []}))))
+      (is (= :kajero/too-many-observations
+             (refusal #(k/observe-many! nb {:actor "claude"
+                                            :observations (repeat 501 {:entry (ids 0) :outcome "held"})})))))))
+
 (deftest a-failed-observation-disputes-until-a-new-revision-answers
   (let [nb (notebook)
         {:keys [entry revision]} (k/write! nb gotcha)]

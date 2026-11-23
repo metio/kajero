@@ -111,6 +111,23 @@
     (testing "a well-formed call still links"
       (is (false? (:error? (call nb "kajero_link" {:source a :type "see-also" :target b})))))))
 
+(deftest several-entries-are-observed-in-one-call-over-mcp
+  (let [nb (notebook)
+        ids (vec (for [t ["one" "two" "three"]]
+                   (get-in (call nb "kajero_write" {:title t :labels {"kind" "fact"}}) [:value "entry"])))
+        {:keys [error? value]} (call nb "kajero_observe_many"
+                                     {:observations [{:entry (subs (ids 0) 0 8) :outcome "held" :evidence ["book"]}
+                                                     {:entry (ids 1) :outcome "held"}
+                                                     {:entry (ids 2) :outcome "failed"}]})]
+    (is (false? error?))
+    (is (= ids (map #(get % "entry") value)))
+    (is (= [1 1 nil] (map #(get-in % ["standing" "held"]) value)))
+    (is (= "no-evidence" (get (nth value 2) "refused")))
+    (testing "an observation naming a parameter it does not take is refused alone"
+      (let [{[r] :value} (call nb "kajero_observe_many" {:observations [{:entry (ids 0) :outcom "held"}]})]
+        (is (= "unknown-parameter" (get r "refused")))
+        (is (re-find #"outcom" (get r "message")))))))
+
 (deftest an-observation-is-corrected-over-mcp
   (let [nb (notebook)
         entry (get-in (call nb "kajero_write" {:title "Issuer" :labels {"kind" "fact"}}) [:value "entry"])
