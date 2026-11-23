@@ -177,6 +177,33 @@
       (is (= :select/bad-term (refusal #(k/search nb "|coredns"))))
       (is (= :select/bad-term (refusal #(k/search nb "coredns|data:host")))))))
 
+(deftest a-coverage-record-says-which-question-was-asked
+  (let [nb (notebook)
+        survey {:question "Which fahrplan hosts answer AAAA?" :population "the 41 hosts in fahrplan's DNS zone"
+                :method "gumshoe book dns/records over every host" :asked "2026-11-23"}
+        {answer :entry} (k/write! nb {:title "fahrplan hosts have no AAAA records" :actor "seb"
+                                      :body "The zone's coverage of IPv6 is nil."
+                                      :labels {"kind" "fact" "component" "dns"}})
+        {coverage :entry} (k/write! nb {:title "Surveyed: AAAA records of the fahrplan hosts" :actor "seb"
+                                        :labels {"kind" "coverage" "component" "dns"} :data survey})
+        ids #(set (map :entry (k/search nb %)))]
+    (testing "the coverage term retrieves the coverage records for a subject whose answer entries exist"
+      (is (= #{answer coverage} (ids "label:component=dns")))
+      (is (= #{coverage} (ids "coverage label:component=dns")))
+      (is (= #{answer} (ids "not coverage label:component=dns"))))
+    (testing "a coverage record names its question, population, method and date"
+      (doseq [k (keys survey)]
+        (is (= :kajero/bad-coverage
+               (refusal #(k/write! nb {:title "incomplete survey" :actor "seb"
+                                       :labels {"kind" "coverage" "component" "dns"} :data (dissoc survey k)})))
+            (str "without " k)))
+      (is (= :kajero/bad-coverage
+             (refusal #(k/write! nb {:title "undated survey" :actor "seb" :labels {"kind" "coverage"}
+                                     :data (assoc survey :asked "last week")}))))
+      (is (= :kajero/bad-coverage
+             (refusal #(k/revise! nb coverage {:base (:revision (k/entry nb coverage)) :actor "seb"
+                                               :data (dissoc survey :method)})))))))
+
 (deftest a-superseded-entry-is-selectable
   (let [nb (notebook)
         {old :entry} (k/write! nb gotcha)

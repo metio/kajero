@@ -57,7 +57,8 @@ Selector terms, all of which must hold, each optionally prefixed `not`:
 `link=<entry id>` (linked to that entry, in either direction),
 `link:<type>=<entry id>` (linked by `supersedes`, `contradicts` or
 `see-also`), `schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
-`unsigned`, `superseded`, `retired`, and `~text` (or a bare word) for title,
+`unsigned`, `superseded`, `retired`, `coverage` (the records of questions
+asked), and `~text` (or a bare word) for title,
 body, labels and data. It is tik's `--where` grammar. Retired entries are
 left out unless the selector names `retired`.
 
@@ -94,6 +95,14 @@ elements. Values compare as printed, a keyword without its colon, and a
 list of plain values matches when any element does. Check the data's shape
 with `kajero_get` first if you do not know the field names.
 
+An empty result does not mean nobody looked. Search `coverage` with the
+subject's labels - `coverage label:component=dns` - for the records of
+surveys already run: each names the question, the population examined, the
+method and the day. A coverage record with no answer entries means the
+question was asked and found nothing; no coverage record means it may never
+have been asked. Judge from its population and date whether the survey
+covers what you need before you re-run it.
+
 Read the standing before trusting an entry. `disputed` means someone found
 the current revision wrong; `stale` means nobody confirmed it for longer
 than its kind allows; a high `held` count from several actors with recent
@@ -118,6 +127,29 @@ fact to repeat.
 - `kajero_write` returns `similar` entries with the same title or labels.
   When one of them covers your finding, revise it and leave the new entry
   unused, or link the two.
+
+## Recording a survey
+
+After any survey - a book run over a population, a sweep of hosts or
+repositories, a search through an estate - write a `kind=coverage` entry
+alongside the answers, even when the survey found nothing. Give it the
+subject's labels (`system`, `component`, `env`), so `coverage` with those
+labels finds it, and data naming what was asked:
+
+```
+kajero_write {"title": "Surveyed: AAAA records of the fahrplan hosts",
+              "labels": {"kind": "coverage", "component": "dns", "project": "infra.run"},
+              "data_edn": "{:question \"Which fahrplan hosts answer AAAA?\"
+                            :population \"the 41 hosts in fahrplan's DNS zone on 2026-11-23\"
+                            :method \"gumshoe book dns/records, every host\"
+                            :asked \"2026-11-23\"
+                            :found \"no host answers AAAA\"}"}
+```
+
+`:question`, `:population`, `:method` and `:asked` (YYYY-MM-DD) are
+required, and a write without them is refused. `:population` may be a
+sentence, a count or the list itself; `:found` is optional. Link the
+answer entries `see-also` the coverage record.
 
 ## Structured data
 
