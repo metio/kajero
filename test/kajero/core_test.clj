@@ -122,6 +122,29 @@
     (is (= #{calico dns} (ids "unsigned")))
     (is (= :select/bad-term (refusal #(k/search nb "stage=:blocked"))))))
 
+(deftest an-alternation-matches-entries-holding-any-of-its-terms
+  (let [nb (notebook)
+        {calico :entry} (k/write! nb gotcha)
+        {dns :entry} (k/write! nb {:title "CoreDNS caches for 30s" :labels {"kind" "fact" "system" "dns"}
+                                   :actor "seb"})
+        {both :entry} (k/write! nb {:title "CoreDNS and Calico together" :labels {"kind" "fact"}
+                                    :actor "seb"})
+        ids #(set (map :entry (k/search nb %)))]
+    (testing "a two-alternative selector returns the union of what each term returns alone"
+      (is (= (into (ids "~apiservices") (ids "~coredns")) (ids "~apiservices|~coredns")))
+      (is (= #{calico dns both} (ids "apiservices|coredns"))))
+    (testing "an alternation is one term among the ANDed ones"
+      (is (= #{dns both} (ids "label:kind=fact coredns|apiservices")))
+      (is (= #{calico both} (ids "label:system=calico|calico"))))
+    (testing "`not` negates the whole alternation"
+      (is (= #{calico} (ids "not coredns|together"))))
+    (testing "an entry matching more alternatives ranks first"
+      (is (= both (:entry (first (k/search nb "coredns|calico"))))))
+    (testing "an empty alternative or a data term inside one is refused"
+      (is (= :select/bad-term (refusal #(k/search nb "coredns|"))))
+      (is (= :select/bad-term (refusal #(k/search nb "|coredns"))))
+      (is (= :select/bad-term (refusal #(k/search nb "coredns|data:host")))))))
+
 (deftest a-superseded-entry-is-selectable
   (let [nb (notebook)
         {old :entry} (k/write! nb gotcha)

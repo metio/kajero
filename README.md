@@ -158,6 +158,14 @@ label:system=calico label:kind not disputed ~apiservices
 | `data:field` | whose data has the field |
 | `data:field=value` | whose data has the field with the value |
 | `~text` or a bare word | whose title, body, labels or data contain the text |
+| `a\|b\|c` | for which any of the terms holds |
+
+An alternation is one term among the ANDed ones. `calico|coredns` picks
+entries holding either word, `label:kind=gotcha|label:kind=fact` either
+kind, and `not a|b` the entries holding none of them. Its text alternatives
+all count towards ranking, so an entry holding more of them comes first. A
+`data:` term cannot be an alternative, because the data terms of a selector
+must hold together in one element.
 
 A retired entry is left out of every selector that does not name `retired`,
 so `retired` lists the retired entries and `not retired` the others.
