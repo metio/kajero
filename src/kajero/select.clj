@@ -15,6 +15,10 @@
      schema-revision=<hash>     the data was checked against that schema revision
      outdated-schema            the data was checked against an older schema revision
      disputed | stale | unsigned | superseded | retired
+     coverage                   a kind=coverage entry: the record that a
+                                question was asked, with its population,
+                                method and day - `coverage label:system=dns`
+                                lists what has been surveyed about DNS
      data:host                  the data has the field
      data:hosts.domain=w-1      the field, through maps and lists, has the value
      ~text  (or a bare word)    title, body, labels or data contain it
@@ -93,6 +97,7 @@
     (= term "unsigned") :unsigned?
     (= term "superseded") :superseded?
     (= term "retired") :retired?
+    (= term "coverage") #(= "coverage" (get-in % [:labels "kind"]))
 
     (str/starts-with? term "label:")
     (let [[k v] (str/split (subs term 6) #"=" 2)]
@@ -138,7 +143,7 @@
   (boolean (some #{term} (terms selector))))
 
 (defn- text-term? [t]
-  (and (not (contains? #{"not" "disputed" "stale" "unsigned" "superseded" "retired" "outdated-schema"} t))
+  (and (not (contains? #{"not" "disputed" "stale" "unsigned" "superseded" "retired" "outdated-schema" "coverage"} t))
        (not (str/includes? t "="))
        (not (str/starts-with? t "label:"))
        (not (data-term? t))))

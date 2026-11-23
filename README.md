@@ -40,6 +40,14 @@ A revision may carry data beside its body: any EDN value, written with
 itself; the pages render a list of maps as a sortable table, a map as a
 definition list, and anything else as EDN.
 
+An entry labelled `kind=coverage` records that a question was asked,
+whatever it found, so a reader can tell an unasked question from an
+unrecorded answer. Its data must name `:question`, `:population` (a
+sentence, a count or the list examined), `:method` and `:asked` (the day,
+`YYYY-MM-DD`), and may carry `:found`. It carries the same `system` and
+`component` labels as the answers, so `coverage label:component=dns` lists
+what has been surveyed about DNS.
+
 An entry labelled `kind=schema` holds a [malli](https://github.com/metosin/malli)
 schema as its data, for example
 `[:vector [:map [:name :string] [:cpus :int]]]`. A revision labelled
@@ -155,6 +163,7 @@ label:system=calico label:kind not disputed ~apiservices
 | `outdated-schema` | whose data was checked against an older schema revision |
 | `disputed`, `stale`, `unsigned`, `superseded` | in that derived state |
 | `retired` | that somebody retired |
+| `coverage` | labelled `kind=coverage`: the records of questions asked |
 | `data:field` | whose data has the field |
 | `data:field=value` | whose data has the field with the value |
 | `~text` or a bare word | whose title, body, labels or data contain the text |

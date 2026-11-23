@@ -345,8 +345,9 @@
 (defn- check-data!
   "{:ref :warnings} for a revision: :ref is {:entry :revision} of the schema
    entry its schema= label names, after checking the data against it. A
-   kind=schema entry's own data must be a malli schema, and a kind=migration
-   entry's a migration between two schema entries. No revision may move onto
+   kind=schema entry's own data must be a malli schema, a kind=migration
+   entry's a migration between two schema entries, and a kind=coverage
+   entry's fit kajero.data/coverage-schema. No revision may move onto
    a deprecated schema; one that stays on the deprecated schema it already
    uses passes with a warning, so old entries stay correctable until they
    are migrated. `previous` is the schema the entry used before, nil for a
@@ -359,6 +360,11 @@
                            {:errors errors})
                   (do (schema-entry! nb (get-in rec [:data :from]))
                       (schema-entry! nb (get-in rec [:data :to]))))
+    "coverage" (when-let [errors (data/explain data/coverage-schema (:data rec))]
+                 (refuse! :kajero/bad-coverage
+                          (str "a kind=coverage entry's data names the question, population, method and "
+                               "the day it was asked (YYYY-MM-DD): " (pr-str errors))
+                          {:errors errors}))
     nil)
   (when-let [schema-id (get labels "schema")]
     (let [schema-rev (schema-entry! nb schema-id)

@@ -30,6 +30,20 @@
   [schema-form data]
   (some-> (m/explain (schema schema-form) data) me/humanize))
 
+(def coverage-schema
+  "The data of an entry labelled kind=coverage: the record that a question
+   was asked, whatever it found. :population says what was examined - a
+   sentence, a count or the list itself - and :asked is the day, so a
+   reader can tell an unasked question from an unrecorded answer and judge
+   whether a survey is too old or too narrow to lean on. :found may
+   summarise or point at the answer entries."
+  [:map
+   [:question [:string {:min 3}]]
+   [:population [:and some? [:not= ""]]]
+   [:method [:string {:min 3}]]
+   [:asked [:re #"^\d{4}-\d{2}-\d{2}"]]
+   [:found {:optional true} any?]])
+
 (defn columns
   "The columns of a table of maps: the keys of a map schema's entries in their
    order when one describes the rows, then every other key in the order the
