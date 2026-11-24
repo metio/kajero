@@ -3,23 +3,19 @@
 (ns kajero.retire-test
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
-            [kajero.mcp :as mcp])
-  (:import (java.nio.file Files)
-           (java.nio.file.attribute FileAttribute)))
-
-(defn- temp-dir []
-  (str (Files/createTempDirectory "kajero" (make-array FileAttribute 0))))
+            [kajero.mcp :as mcp]
+            [kajero.test-temp :as temp]))
 
 (def ^:private ^:dynamic *backend* :sqlite)
 
-(use-fixtures :each (fn [run-test] (doseq [backend [:sqlite :files]]
-                                     (binding [*backend* backend]
-                                       (testing (name backend) (run-test))))))
+(use-fixtures :each temp/each (fn [run-test] (doseq [backend [:sqlite :files]]
+                                               (binding [*backend* backend]
+                                                 (testing (name backend) (run-test))))))
 
 (defn- notebook []
   (k/notebook (if (= :files *backend*)
-                {:dir (str (temp-dir) "/notes")}
-                {:path (str (temp-dir) "/notes.db")})))
+                {:dir (str (temp/temp-dir) "/notes")}
+                {:path (str (temp/temp-dir) "/notes.db")})))
 
 (defn- refusal [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))

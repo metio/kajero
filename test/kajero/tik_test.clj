@@ -1,11 +1,12 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.tik-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
-            [kajero.tik :as tik])
-  (:import (java.nio.file Files)
-           (java.nio.file.attribute FileAttribute)))
+            [kajero.tik :as tik]
+            [kajero.test-temp :as temp]))
+
+(use-fixtures :each temp/each)
 
 (def ^:private known "5084203b-b89a-479e-9075-02fdf34806d9")
 (def ^:private unknown "00000000-0000-0000-0000-000000000000")
@@ -14,7 +15,7 @@
   (when (= known id) {:ticket id :title "kajero: structured data" :current ["proven"] :process "skilled-change"}))
 
 (defn- notebook [opts]
-  (k/notebook (merge {:dir (str (Files/createTempDirectory "kajero" (make-array FileAttribute 0)) "/notes")} opts)))
+  (k/notebook (merge {:dir (str (temp/temp-dir) "/notes")} opts)))
 
 (defn- refusal [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))

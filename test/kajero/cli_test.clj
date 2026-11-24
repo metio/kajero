@@ -1,14 +1,15 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.cli-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [clojure.test :refer [deftest is use-fixtures]]
             [kajero.cli :as cli]
-            [kajero.core :as k])
-  (:import (java.nio.file Files)
-           (java.nio.file.attribute FileAttribute)))
+            [kajero.core :as k]
+            [kajero.test-temp :as temp]))
+
+(use-fixtures :each temp/each)
 
 (defn- notebook []
-  (k/notebook {:path (str (Files/createTempDirectory "kajero" (make-array FileAttribute 0)) "/notes.db")}))
+  (k/notebook {:path (str (temp/temp-dir) "/notes.db")}))
 
 (deftest observe-many-reads-its-observations-as-edn-from-stdin
   (let [nb (notebook)

@@ -5,25 +5,21 @@
             [clojure.java.shell :as sh]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
-            [kajero.store :as store])
-  (:import (java.nio.file Files)
-           (java.nio.file.attribute FileAttribute)
-           (java.time Instant)))
-
-(defn- temp-dir []
-  (str (Files/createTempDirectory "kajero" (make-array FileAttribute 0))))
+            [kajero.store :as store]
+            [kajero.test-temp :as temp])
+  (:import (java.time Instant)))
 
 (def ^:private ^:dynamic *backend* :sqlite)
 
-(use-fixtures :each (fn [run-test] (doseq [backend [:sqlite :files]]
-                                     (binding [*backend* backend]
-                                       (testing (name backend) (run-test))))))
+(use-fixtures :each temp/each (fn [run-test] (doseq [backend [:sqlite :files]]
+                                               (binding [*backend* backend]
+                                                 (testing (name backend) (run-test))))))
 
 (defn- notebook
   ([] (notebook {}))
   ([opts] (k/notebook (merge (if (= :files *backend*)
-                               {:dir (str (temp-dir) "/notes")}
-                               {:path (str (temp-dir) "/notes.db")})
+                               {:dir (str (temp/temp-dir) "/notes")}
+                               {:path (str (temp/temp-dir) "/notes.db")})
                              opts))))
 
 (defmacro ^:private at
@@ -225,7 +221,7 @@
 (defn- keypair
   "A fresh ed25519 key and an actors file naming it, or nil without ssh-keygen."
   [actor]
-  (let [dir (temp-dir)
+  (let [dir (temp/temp-dir)
         key (str dir "/id_ed25519")]
     (when (zero? (:exit (sh/sh "ssh-keygen" "-q" "-t" "ed25519" "-N" "" "-f" key)))
       (spit (str dir "/actors") (str actor " namespaces=\"kajero\" " (slurp (str key ".pub"))))
@@ -257,7 +253,7 @@
 
 (deftest flat-files-are-plain-edn
   (when (= :files *backend*)
-    (let [dir (str (temp-dir) "/notes")
+    (let [dir (str (temp/temp-dir) "/notes")
           nb (k/notebook {:dir dir})
           {:keys [entry]} (k/write! nb gotcha)]
       (is (= "Calico v3 is served by CRDs"
