@@ -337,7 +337,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                  records)))
 
 (defn- history-item [{:keys [kind actor at outcome evidence title type source target hash signed? retired restored?
-                             corrects corrected-by]}]
+                             corrects corrected-by selector]}]
   [:li {:class (if (= kind :observation) (str "observation-" outcome) (name kind))}
    [:div [:strong (case kind
                     :revision (cond retired (str "retired: " (:reason retired))
@@ -347,6 +347,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                     :link (str source " " type " " target))]]
    [:div.meta actor " · " (when-str at) (when-not signed? " · unsigned")]
    (when (seq evidence) [:div.meta "evidence: " (str/join "; " evidence)])
+   (when selector [:div.meta "missed by: " selector])
    (when corrects [:div.meta "corrects " (subs corrects 0 (min 19 (count corrects)))])
    (when corrected-by [:div.meta.corrected "corrected by " (subs corrected-by 0 (min 19 (count corrected-by)))
                        " - no longer counts"])

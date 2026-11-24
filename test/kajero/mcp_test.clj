@@ -140,3 +140,20 @@
     (is (false? error?))
     (is (zero? (get-in got ["standing" "held"])))
     (is (= [[wrong "withdrawn"]] (map (juxt #(get % "observation") #(get % "correction")) (get got "corrections"))))))
+
+(deftest a-missed-search-is-observed-over-mcp
+  (let [nb (notebook)
+        entry (get-in (call nb "kajero_write" {:title "45.92.49.20 is our own HAProxy" :labels {"kind" "fact"}}) [:value "entry"])
+        other (get-in (call nb "kajero_write" {:title "CoreDNS caches" :labels {"kind" "fact"}}) [:value "entry"])]
+    (testing "missed needs the selector"
+      (let [{:keys [error? value]} (call nb "kajero_observe" {:entry entry :outcome "missed"})]
+        (is (true? error?))
+        (is (= "no-selector" (get value "refused")))))
+    (is (false? (:error? (call nb "kajero_observe" {:entry entry :outcome "missed" :selector "etherpad lernraum"}))))
+    (let [{[r] :value} (call nb "kajero_observe_many" {:observations [{:entry other :outcome "missed" :selector "~wildcard"}]})]
+      (is (string? (get r "observation"))))
+    (let [got (:value (call nb "kajero_get" {:entry entry}))]
+      (is (zero? (get-in got ["standing" "held"])))
+      (is (false? (get-in got ["standing" "disputed?"])))
+      (is (= ["etherpad lernraum"] (map #(get % "selector") (get got "missed")))))
+    (is (= #{entry other} (set (map #(get % "entry") (:value (call nb "kajero_search" {:selector "missed"}))))))))

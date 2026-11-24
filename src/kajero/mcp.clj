@@ -54,10 +54,11 @@
                                      labels-arg evidence-arg data-arg)
                   :required ["entry" "base"]}}
    {:name "kajero_observe"
-    :description "Record that you checked an entry's revision (the current one by default) and found it held or failed. Base it on a fresh check, never on having read the entry. A failed observation needs evidence and disputes the revision until a new revision answers it. To correct an earlier observation whose evidence or reasoning turned out wrong, pass its hash (from kajero_history) as corrects, with evidence saying what was wrong: the new outcome replaces its verdict, or withdrawn takes it back without a new one. The earlier observation stays in the history, marked corrected, and kajero_get lists it under corrections."
+    :description "Record that you checked an entry's revision (the current one by default) and found it held or failed. Base it on a fresh check, never on having read the entry. A failed observation needs evidence and disputes the revision until a new revision answers it. To correct an earlier observation whose evidence or reasoning turned out wrong, pass its hash (from kajero_history) as corrects, with evidence saying what was wrong: the new outcome replaces its verdict, or withdrawn takes it back without a new one. The earlier observation stays in the history, marked corrected, and kajero_get lists it under corrections. Record missed when the entry was right but a search that should have found it did not, and a later route reached it: pass the selector that was run. A missed observation leaves held, failed and disputed alone; kajero_get lists it under missed, and the selector term missed picks entries whose current revision has one."
     :inputSchema {:type "object"
                   :properties (merge entry-arg
-                                     {:outcome {:type "string" :enum ["held" "failed" "withdrawn"]}
+                                     {:outcome {:type "string" :enum ["held" "failed" "missed" "withdrawn"]}
+                                      :selector {:type "string" :description "for missed: the selector that did not find the entry"}
                                       :revision {:type "string"}
                                       :corrects {:type "string" :description "the hash of the earlier observation this one corrects"}}
                                      evidence-arg)
@@ -69,7 +70,8 @@
                                {:type "array"
                                 :items {:type "object"
                                         :properties (merge entry-arg
-                                                           {:outcome {:type "string" :enum ["held" "failed" "withdrawn"]}
+                                                           {:outcome {:type "string" :enum ["held" "failed" "missed" "withdrawn"]}
+                                                            :selector {:type "string"}
                                                             :revision {:type "string"}
                                                             :corrects {:type "string"}}
                                                            evidence-arg)
@@ -134,7 +136,7 @@
   (reduce (fn [a k] (cond-> a (string? (get a k)) (update k #(k/resolve-id nb %))))
           args ["entry" "source" "target" "migration"]))
 
-(def ^:private observation-keys #{"entry" "outcome" "revision" "evidence" "corrects"})
+(def ^:private observation-keys #{"entry" "outcome" "revision" "evidence" "corrects" "selector"})
 
 (defn- observe-many
   "Observes each item; an item naming a parameter an observation does not
@@ -175,7 +177,7 @@
                                                        :labels (not-empty labels) :evidence evidence}
                                                (when data_edn {:data (read-edn data_edn)})))
     "kajero_observe" (k/observe! nb entry (merge writer {:outcome outcome :revision revision :evidence evidence
-                                                         :corrects corrects}))
+                                                         :corrects corrects :selector selector}))
     "kajero_observe_many" (observe-many nb writer observations)
     "kajero_retire" (k/retire! nb entry (merge writer {:base base :reason reason :evidence evidence}))
     "kajero_restore" (k/restore! nb entry (merge writer {:base base :evidence evidence}))

@@ -5,6 +5,7 @@
             [clojure.java.shell :as sh]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
+            [kajero.standing :as standing]
             [kajero.store :as store]
             [kajero.test-temp :as temp])
   (:import (java.time Instant)))
@@ -352,3 +353,73 @@
     (k/observe! nb a {:outcome "failed" :corrects obs :evidence ["y"] :actor "claude"})
     (is (= :kajero/already-corrected
            (refusal #(k/observe! nb a {:outcome "held" :corrects obs :evidence ["z"] :actor "claude"}))))))
+
+;; ------------------------------------------------------------ findability
+
+(deftest a-missed-observation-names-the-selector-that-did-not-find-the-entry
+  (let [nb (notebook)
+        {:keys [entry]} (k/write! nb gotcha)]
+    (is (= :kajero/no-selector (refusal #(k/observe! nb entry {:outcome "missed" :actor "claude"}))))
+    (is (= :kajero/no-selector (refusal #(k/observe! nb entry {:outcome "missed" :selector "  " :actor "claude"}))))
+    (is (= :select/bad-term (refusal #(k/observe! nb entry {:outcome "missed" :selector "label:" :actor "claude"}))))
+    (is (= :kajero/bad-selector
+           (refusal #(k/observe! nb entry {:outcome "held" :selector "calico" :evidence ["x"] :actor "claude"})))
+        "only a missed observation carries a selector")
+    (is (empty? (filter #(= :observation (:kind %)) (k/history nb entry))))))
+
+(deftest a-missed-observation-leaves-the-standing-alone
+  (let [nb (notebook)
+        {:keys [entry]} (at "2026-01-01T00:00:00Z" (k/write! nb (assoc gotcha :labels {"kind" "fact"})))
+        before (at "2026-05-01T00:00:00Z" (:standing (k/entry nb entry)))]
+    (at "2026-04-30T00:00:00Z" (k/observe! nb entry {:outcome "missed" :selector "etherpad lernraum" :actor "claude"}))
+    (at "2026-04-30T00:00:00Z" (k/observe! nb entry {:outcome "missed" :selector "~wildcard" :actor "seb"}))
+    (let [after (at "2026-05-01T00:00:00Z" (:standing (k/entry nb entry)))]
+      (is (= before after) "held, failed, disputed and stale are what they were")
+      (is (= {:held 0 :failed 0 :disputed? false :stale? true}
+             (select-keys after [:held :failed :disputed? :stale?]))))
+    (is (empty? (k/search nb "disputed")))))
+
+(deftest standing-derivation-ignores-missed-observations
+  (let [rev {:at "2026-11-01T00:00:00Z" :labels {"kind" "fact"}}
+        held {:outcome "held" :actor "claude" :at "2026-11-02T00:00:00Z"}
+        missed {:outcome "missed" :selector "etherpad" :actor "seb" :at "2026-11-03T00:00:00Z"}
+        now (Instant/parse "2026-11-04T00:00:00Z")]
+    (is (= (standing/derive-standing rev [held] now)
+           (standing/derive-standing rev [held missed] now)))))
+
+(deftest the-missed-term-selects-entries-a-search-did-not-find
+  (let [nb (notebook)
+        {:keys [entry revision]} (k/write! nb gotcha)
+        {other :entry} (k/write! nb (assoc gotcha :title "CoreDNS caches for 30s"))]
+    (k/observe! nb other {:outcome "held" :evidence ["dig"] :actor "claude"})
+    (is (empty? (k/search nb "missed")))
+    (k/observe! nb entry {:outcome "missed" :selector "label:system=k8s apiserver" :actor "claude"})
+    (is (= [entry] (map :entry (k/search nb "missed"))))
+    (is (= [other] (map :entry (k/search nb "not missed"))))
+    (testing "the entry lists the selectors that missed it, for whoever adds the words"
+      (is (= [{:selector "label:system=k8s apiserver" :actor "claude"}]
+             (mapv #(select-keys % [:selector :actor]) (:missed (k/entry nb entry)))))
+      (is (not (contains? (k/entry nb other) :missed))))
+    (testing "history keeps the selector"
+      (is (= ["label:system=k8s apiserver"]
+             (keep :selector (k/history nb entry)))))
+    (testing "a revision with better words answers it"
+      (k/revise! nb entry {:base revision :title "Calico v3 is served by CRDs, not the apiserver" :actor "claude"})
+      (is (empty? (k/search nb "missed")))
+      (is (not (contains? (k/entry nb entry) :missed))))))
+
+(deftest a-missed-observation-can-be-withdrawn
+  (let [nb (notebook)
+        {:keys [entry]} (k/write! nb gotcha)
+        {obs :observation} (k/observe! nb entry {:outcome "missed" :selector "calico" :actor "claude"})]
+    (k/observe! nb entry {:outcome "withdrawn" :corrects obs :evidence ["the selector had a typo"] :actor "claude"})
+    (is (empty? (k/search nb "missed")))))
+
+(deftest a-missed-observation-is-signed-like-any-other
+  (when-let [{:keys [key actors]} (keypair "claude")]
+    (let [nb (notebook {:signing :required :actors actors})
+          {:keys [entry]} (k/write! nb (assoc gotcha :key key))]
+      (is (= :kajero/unsigned (refusal #(k/observe! nb entry {:outcome "missed" :selector "calico" :actor "claude"}))))
+      (k/observe! nb entry {:outcome "missed" :selector "calico" :actor "claude" :key key})
+      (is (= [true] (map :signed? (filter #(= :observation (:kind %)) (k/history nb entry)))))
+      (is (= [entry] (map :entry (k/search nb "missed")))))))
