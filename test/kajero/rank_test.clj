@@ -2,16 +2,17 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.rank-test
   (:require [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
             [kajero.rank :as rank]
-            [kajero.select :as select])
-  (:import (java.nio.file Files)
-           (java.nio.file.attribute FileAttribute)
-           (java.time Instant)))
+            [kajero.select :as select]
+            [kajero.test-temp :as temp])
+  (:import (java.time Instant)))
+
+(use-fixtures :each temp/each)
 
 (defn- notebook []
-  (k/notebook {:path (str (Files/createTempDirectory "kajero" (make-array FileAttribute 0)) "/notes.db")}))
+  (k/notebook {:path (str (temp/temp-dir) "/notes.db")}))
 
 (defmacro ^:private at [instant & body]
   `(binding [k/*now* (Instant/parse ~instant)] (let [res# (do ~@body)] res#)))

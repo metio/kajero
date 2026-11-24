@@ -1,14 +1,15 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.data-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
-            [kajero.data :as data])
-  (:import (java.nio.file Files)
-           (java.nio.file.attribute FileAttribute)))
+            [kajero.data :as data]
+            [kajero.test-temp :as temp]))
+
+(use-fixtures :each temp/each)
 
 (defn- notebook []
-  (k/notebook {:dir (str (Files/createTempDirectory "kajero" (make-array FileAttribute 0)) "/notes")}))
+  (k/notebook {:dir (str (temp/temp-dir) "/notes")}))
 
 (defn- refusal [f]
   (try (f) nil (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))

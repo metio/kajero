@@ -2,14 +2,15 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.mcp-test
   (:require [cheshire.core :as json]
-            [clojure.test :refer [deftest is testing]]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
-            [kajero.mcp :as mcp])
-  (:import (java.nio.file Files)
-           (java.nio.file.attribute FileAttribute)))
+            [kajero.mcp :as mcp]
+            [kajero.test-temp :as temp]))
+
+(use-fixtures :each temp/each)
 
 (defn- notebook []
-  (k/notebook {:path (str (Files/createTempDirectory "kajero" (make-array FileAttribute 0)) "/notes.db")}))
+  (k/notebook {:path (str (temp/temp-dir) "/notes.db")}))
 
 (defn- call
   [nb tool args]

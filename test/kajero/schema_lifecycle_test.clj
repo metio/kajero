@@ -3,18 +3,17 @@
 (ns kajero.schema-lifecycle-test
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
-            [kajero.migrate :as migrate])
-  (:import (java.nio.file Files)
-           (java.nio.file.attribute FileAttribute)))
+            [kajero.migrate :as migrate]
+            [kajero.test-temp :as temp]))
 
 (def ^:private ^:dynamic *backend* :sqlite)
 
-(use-fixtures :each (fn [run-test] (doseq [backend [:sqlite :files]]
-                                     (binding [*backend* backend]
-                                       (testing (name backend) (run-test))))))
+(use-fixtures :each temp/each (fn [run-test] (doseq [backend [:sqlite :files]]
+                                               (binding [*backend* backend]
+                                                 (testing (name backend) (run-test))))))
 
 (defn- notebook []
-  (let [dir (str (Files/createTempDirectory "kajero" (make-array FileAttribute 0)))]
+  (let [dir (temp/temp-dir)]
     (k/notebook (if (= :files *backend*) {:dir (str dir "/notes")} {:path (str dir "/notes.db")}))))
 
 (defn- refusal [f]

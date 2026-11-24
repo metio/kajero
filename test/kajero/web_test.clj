@@ -4,14 +4,15 @@
   (:require [cheshire.core :as json]
             [clojure.edn :as edn]
             [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
-            [kajero.web :as web])
-  (:import (java.nio.file Files)
-           (java.nio.file.attribute FileAttribute)))
+            [kajero.web :as web]
+            [kajero.test-temp :as temp]))
+
+(use-fixtures :each temp/each)
 
 (defn- notebook []
-  (k/notebook {:path (str (Files/createTempDirectory "kajero" (make-array FileAttribute 0)) "/notes.db")}))
+  (k/notebook {:path (str (temp/temp-dir) "/notes.db")}))
 
 (def ^:private writer {:actor "seb"})
 
