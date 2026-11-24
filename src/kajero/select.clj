@@ -15,6 +15,9 @@
      schema-revision=<hash>     the data was checked against that schema revision
      outdated-schema            the data was checked against an older schema revision
      disputed | stale | unsigned | superseded | retired
+     missed                     a search did not find the current revision
+                                although it held the answer: the entry
+                                needs the words a searcher would use
      coverage                   a kind=coverage entry: the record that a
                                 question was asked, with its population,
                                 method and day - `coverage label:system=dns`
@@ -38,7 +41,7 @@
 
    `compile` returns a predicate over a row
      {:labels {\"kind\" \"gotcha\"} :actors #{\"seb\"} :links #{[\"see-also\" id]} :haystack \"...\" :data ...
-      :disputed? bool :stale? bool :unsigned? bool :superseded? bool}
+      :disputed? bool :stale? bool :missed? bool :unsigned? bool :superseded? bool}
    or throws ex-info {:reason :select/bad-term}."
   (:refer-clojure :exclude [compile])
   (:require [clojure.string :as str]
@@ -97,6 +100,7 @@
     (= term "unsigned") :unsigned?
     (= term "superseded") :superseded?
     (= term "retired") :retired?
+    (= term "missed") :missed?
     (= term "coverage") #(= "coverage" (get-in % [:labels "kind"]))
 
     (str/starts-with? term "label:")
@@ -143,7 +147,7 @@
   (boolean (some #{term} (terms selector))))
 
 (defn- text-term? [t]
-  (and (not (contains? #{"not" "disputed" "stale" "unsigned" "superseded" "retired" "outdated-schema" "coverage"} t))
+  (and (not (contains? #{"not" "disputed" "stale" "unsigned" "superseded" "retired" "outdated-schema" "coverage" "missed"} t))
        (not (str/includes? t "="))
        (not (str/starts-with? t "label:"))
        (not (data-term? t))))

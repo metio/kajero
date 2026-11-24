@@ -20,6 +20,10 @@ kajero's own append-only store, so writing needs no checkout, branch or merge.
 - An **observation** records that an actor checked a revision and found it
   `held` or `failed`, with the evidence of that check. A `failed` observation
   needs evidence and disputes the revision until a new revision answers it.
+  A `missed` observation records that the revision held the answer but a
+  search that should have found it did not; it carries the selector that was
+  run, does not count as `held` or `failed`, never disputes the revision, and
+  stays on the entry until a new revision gives it better words.
 - An entry's **standing** is derived from its observations on every read: how
   many independent `held` and `failed` observations it has (one per actor per
   30 days), when it last held, whether it is disputed, and whether it went
@@ -163,6 +167,7 @@ label:system=calico label:kind not disputed ~apiservices
 | `outdated-schema` | whose data was checked against an older schema revision |
 | `disputed`, `stale`, `unsigned`, `superseded` | in that derived state |
 | `retired` | that somebody retired |
+| `missed` | whose current revision a search missed: they need better titles or labels |
 | `coverage` | labelled `kind=coverage`: the records of questions asked |
 | `data:field` | whose data has the field |
 | `data:field=value` | whose data has the field with the value |
@@ -222,6 +227,7 @@ export KAJERO_DB=notes.db KAJERO_ACTOR=seb KAJERO_KEY=~/.config/tik/id_ed25519
 bb kajero write "Calico v3 is served by CRDs" --body - --label kind=gotcha --label system=calico < note.md
 bb kajero search 'label:kind=gotcha not disputed'
 bb kajero observe <id> held --evidence "kubectl get apiservices"
+bb kajero observe <id> missed --selector 'etherpad lernraum'
 echo '[{:entry "e8da4903" :outcome "held" :evidence ["book dns"]}]' | bb kajero observe-many -
 bb kajero revise <id> --base <revision> --body -
 bb kajero labels

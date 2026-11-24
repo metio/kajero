@@ -159,12 +159,24 @@
   (let [corrected (into #{} (keep :corrects) observations)]
     (remove #(or (= "withdrawn" (:outcome %)) (corrected (record/hash-of %))) observations)))
 
+(defn- missed
+  "The searches that did not find the revision although it held the answer:
+   {:selector :actor :at} of each missed observation among `observations`,
+   oldest first."
+  [observations]
+  (->> observations
+       (filter #(= "missed" (:outcome %)))
+       (map #(select-keys % [:selector :actor :at]))
+       (sort-by :at)
+       vec))
+
 (defn- view
   [nb entry]
   (let [revisions (revisions-of nb entry)
         rev (peek revisions)
         all-observations (observations-of nb entry)
         observations (counted all-observations)
+        of-current (filter #(= (record/hash-of rev) (:revision %)) observations)
         links (links-of nb entry)]
     {:entry entry
      :revision (record/hash-of rev)
@@ -177,8 +189,8 @@
      :data (:data rev)
      :schema (:schema rev)
      :signed? (some? (:sig rev))
-     :standing (standing/derive-standing
-                rev (filter #(= (record/hash-of rev) (:revision %)) observations) (now))
+     :standing (standing/derive-standing rev of-current (now))
+     :missed (missed of-current)
      :links (mapv #(select-keys % [:source :type :target]) links)
      :superseded? (boolean (some #(and (= "supersedes" (:type %)) (= entry (:target %))) links))
      :retired (:retired rev)
@@ -198,13 +210,14 @@
     (-> (view nb id)
         (dissoc :actors :ticket-ids)
         (as-> e (if (seq (:corrections e)) e (dissoc e :corrections)))
+        (as-> e (if (seq (:missed e)) e (dissoc e :missed)))
         (cond-> (nil? (:retired (current nb id))) (dissoc :retired))
         (cond-> (= "schema" (get-in (current nb id) [:labels "kind"]))
           (assoc :used-by (schema-users nb id)))
         (assoc :tickets (tickets nb (concat (revisions-of nb id) (observations-of nb id)))))))
 
 (defn- row
-  [{:keys [entry title body labels links standing signed? superseded? retired actors ticket-ids outdated-schema?] :as v}]
+  [{:keys [entry title body labels links standing signed? superseded? retired actors ticket-ids outdated-schema? missed] :as v}]
   {:labels labels
    :links (into #{} (map (fn [{:keys [source type target]}]
                            [type (if (= entry source) target source)]))
@@ -219,6 +232,7 @@
                                                    (map #(str/join "=" %) labels))))
    :disputed? (:disputed? standing)
    :stale? (:stale? standing)
+   :missed? (boolean (seq missed))
    :unsigned? (not signed?)
    :superseded? superseded?
    :retired? (some? retired)})
@@ -499,16 +513,27 @@
   "Records that `actor` checked a revision (the current one by default) and
    found it `held` or `failed`. A failed observation needs evidence.
 
+   The outcome `missed` records that the revision held the answer but a
+   search did not find it: its :selector is the selector that was run. It
+   judges the entry's words and leaves the standing alone; the `missed`
+   selector term picks entries whose current revision has one.
+
    With :corrects naming an earlier observation of the entry, the new one
    replaces its verdict: the earlier one stays in the history, marked
    corrected, and stops counting toward the standing. The outcome
    `withdrawn` takes a verdict back without giving a new one. A correction
    needs evidence saying what was wrong."
-  [nb id {:keys [revision outcome evidence actor key corrects]}]
+  [nb id {:keys [revision outcome evidence actor key corrects selector]}]
   (check-actor! actor)
-  (when-not (or (#{"held" "failed"} outcome) (and corrects (= "withdrawn" outcome)))
-    (refuse! :kajero/bad-outcome "an observation is held or failed, or withdrawn when it corrects another"
+  (when-not (or (#{"held" "failed" "missed"} outcome) (and corrects (= "withdrawn" outcome)))
+    (refuse! :kajero/bad-outcome "an observation is held, failed or missed, or withdrawn when it corrects another"
              {:outcome outcome}))
+  (if (= "missed" outcome)
+    (do (when (str/blank? selector)
+          (refuse! :kajero/no-selector "a missed observation needs the selector that did not find the entry" {}))
+        (select/compile selector))
+    (when (some? selector)
+      (refuse! :kajero/bad-selector "only a missed observation carries a selector" {:outcome outcome})))
   (when (and (or (= "failed" outcome) corrects) (empty? (evidence-list evidence)))
     (refuse! :kajero/no-evidence (if corrects "a correction needs evidence" "a failed observation needs evidence") {}))
   (check-tickets! nb (evidence-list evidence))
@@ -520,7 +545,8 @@
       (refuse! :kajero/no-revision (format "entry %s has no revision %s" id target) {:entry id}))
     (let [rec (cond-> {:entry id :revision target :outcome outcome :evidence (evidence-list evidence)
                        :actor actor :at (str (now))}
-                corrects (assoc :corrects corrects))
+                corrects (assoc :corrects corrects)
+                (= "missed" outcome) (assoc :selector selector))
           hash (store/append! (:store nb) :observation rec (seal nb rec key))]
       {:observation hash :standing (:standing (entry nb id))})))
 
@@ -548,7 +574,7 @@
   (mapv (fn [{:keys [entry] :as o}]
           (let [id (resolve-id nb (str entry))]
             (try
-              (assoc (observe! nb id (merge (select-keys o [:outcome :revision :evidence :corrects])
+              (assoc (observe! nb id (merge (select-keys o [:outcome :revision :evidence :corrects :selector])
                                             {:actor actor :key key}))
                      :entry id)
               (catch clojure.lang.ExceptionInfo e

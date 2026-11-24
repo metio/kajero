@@ -21,3 +21,12 @@
                     (#'cli/run-command nb ["observe-many" "-"])))]
     (is (= [a b] (mapv :entry results)))
     (is (= [1 1] (mapv #(get-in (k/entry nb %) [:standing :held]) [a b])))))
+
+(deftest observe-records-a-missed-search-with-its-selector
+  (let [nb (notebook)
+        a (:entry (k/write! nb {:title "45.92.49.20 is our own HAProxy" :labels {"kind" "fact"} :actor "seb"}))]
+    (with-redefs [cli/writer (constantly {:actor "claude"})]
+      (#'cli/run-command nb ["observe" a "missed" "--selector" "etherpad lernraum"]))
+    (is (= [a] (map :entry (k/search nb "missed"))))
+    (is (= ["etherpad lernraum"] (map :selector (:missed (k/entry nb a)))))
+    (is (zero? (get-in (k/entry nb a) [:standing :held])))))

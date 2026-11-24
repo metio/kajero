@@ -28,6 +28,7 @@
   write TITLE [--body B] [--data EDN] --label K=V... [--evidence E...]
   revise ID --base REV [--title T] [--body B] [--data EDN] [--label K=V...] [--evidence E...]
   observe ID held|failed [--revision REV] --evidence E...
+  observe ID missed --selector S [--evidence E...]   a search for S did not find the entry
   observe-many FILE                       several observations, an EDN list of
                                           {:entry :outcome :evidence [...]}; - reads stdin
   retire ID --base REV --reason R [--evidence E...]   hide an entry from search
@@ -86,7 +87,8 @@
                                                           :evidence (get flags :evidence)}
                                                 (data-of flags)))
       "observe" (k/observe! nb (first pos) (merge (writer) {:outcome (second pos) :revision (one flags :revision)
-                                                            :evidence (get flags :evidence)}))
+                                                            :evidence (get flags :evidence)
+                                                            :selector (one flags :selector)}))
       "observe-many" (let [f (first pos)
                            items (read-edn (if (or (nil? f) (= "-" f)) (slurp *in*) (slurp f)))]
                        (k/observe-many! nb (assoc (writer) :observations items)))

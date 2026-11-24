@@ -260,3 +260,9 @@
     (k/observe! nb entry {:outcome "held" :evidence ["kubectl get schedules"] :actor "claude"})
     (is (= "held 1</span>" (badge)))
     (is (not (str/includes? (:body (get-page nb (str "/e/" entry))) "𝍸")))))
+
+(deftest the-history-names-the-selector-a-search-missed
+  (let [nb (notebook)
+        {:keys [entry]} (k/write! nb {:title "45.92.49.20 is our own HAProxy" :labels {"kind" "fact"} :actor "claude"})]
+    (k/observe! nb entry {:outcome "missed" :selector "etherpad|lernraum" :actor "claude"})
+    (is (str/includes? (:body (get-page nb (str "/e/" entry))) "missed by: etherpad|lernraum"))))

@@ -200,6 +200,20 @@ evidence, and it counts for nothing.
 - `held`: your check confirmed the current revision.
 - `failed`: your check contradicts it. Evidence is required, and the entry
   shows as disputed until a new revision answers.
+- `missed`: the entry was right, but a search that should have found it did
+  not. Record one whenever a search failed and a later route - another
+  selector, a link, somebody naming the fact - found the entry anyway. Pass
+  the selector that came back empty as `selector`; it is required, because
+  it names the words the entry lacks. A `missed` observation judges the
+  entry's title and labels, not its content: it counts as neither `held`
+  nor `failed` and never disputes the entry. The selector term `missed`
+  picks entries whose current revision has one, and `kajero_get` lists
+  their selectors under `missed`; revising the entry with the words a
+  searcher used answers them.
+
+```
+kajero_observe {"entry": "bf9c0879", "outcome": "missed", "selector": "etherpad|lernraum"}
+```
 
 A check that covered several entries - a gumshoe book, a survey, a session
 that re-verified what it read - records them all in one call with
