@@ -201,8 +201,33 @@ title weighs 12, in the labels 6, in the body 2 and in the data 1, and up to
 five matches of a term in one field count, so a title naming a word outranks
 a body repeating it. Each result carries its `:score` and, per term, a
 `:matches` item with the field it matched in and a snippet of the text around
-the match. Equal scores, and searches without text, go most recently changed
-first.
+the match.
+
+Citations then lift an entry within its neighbourhood of term scores. An
+entry cites another when its current revision names it in the body as
+`[[<id or prefix>]]` or holds a `see-also` link to it. Each result carries
+`:citations`, the number of entries in the notebook citing it, and is
+ordered by
+
+```
+rank = score + min(citations, 3)
+```
+
+highest first, carried as `:rank`. The bound of 3 is less than the gap of 4
+between one match in the labels (6) and one in the body (2), so a heavily
+cited entry mentioning a term once in its body stays below an entry
+carrying it in a label or the title, and citations decide between close
+term scores only. A body repeating the term up to five times can still
+pass a title match once cited, as it can come within 2 of one uncited. A citation is a costly signal, since it means the
+entry shaped a later write. A `supersedes` or `contradicts` link points at
+a replaced or disputed entry and does not count; each citing entry counts
+once per target however many references and links it holds; an entry
+citing itself, in any revision, counts nothing; only the current revision
+of the citing entry counts, so a removed reference stops counting; and a
+retired or superseded entry cites nothing. `tik:<id>` evidence cites a
+ticket, not an entry, and does not count. The counts are derived from the
+revisions and links on each search and never stored. Equal ranks, and
+searches without text, go most recently changed first.
 
 ## Retiring an entry
 

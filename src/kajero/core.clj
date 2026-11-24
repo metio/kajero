@@ -10,6 +10,7 @@
    signing is :optional takes them and marks them unsigned. A signature is
    checked against the actors file before anything is written."
   (:require [clojure.string :as str]
+            [kajero.cite :as cite]
             [kajero.data :as data]
             [kajero.data-query :as dq]
             [kajero.migrate :as migrate]
@@ -238,10 +239,13 @@
    :data (if (some? (:data v)) (pr-str (:data v)) "")})
 
 (defn search
-  "Summaries of the entries the selector picks. With text terms, the best
-   match comes first - see kajero.rank - and each summary carries its
-   :score and, per term, where it matched with the text around it; ties
-   and selectors without text go most recently changed first. With data:
+  "Summaries of the entries the selector picks. With text terms, each
+   summary carries its term :score - see kajero.rank - the number of
+   entries in the notebook that cite it as :citations - see kajero.cite -
+   and their sum as :rank, the term score plus (cite/boost citations); the
+   highest rank comes first, and each summary says per term where it
+   matched with the text around it. Equal ranks and selectors without text
+   go most recently changed first. With data:
    terms, each summary carries as :rows the elements of its data they pick
    together - see kajero.data-query. Retired entries are left out unless the selector names `retired`."
   [nb selector]
@@ -249,18 +253,22 @@
                (not (select/names? selector "retired")) (every-pred (complement :retired?)))
         terms (select/text-terms selector)
         data-terms (not-empty (select/data-terms selector))
+        views (mapv #(view nb %) (entry-ids nb))
+        citations (when (seq terms) (cite/incoming views))
         ranked (fn [v] (if (seq terms)
-                         (let [text (text-of v)]
-                           (assoc v :score (rank/score text terms) :matches (rank/matches text terms)))
+                         (let [text (text-of v)
+                               score (rank/score text terms)
+                               cited (get citations (:entry v) 0)]
+                           (assoc v :score score :citations cited :rank (+ score (cite/boost cited))
+                                  :matches (rank/matches text terms)))
                          v))]
-    (->> (entry-ids nb)
-         (map #(view nb %))
+    (->> views
          (filter (comp pred row))
          (map ranked)
-         (sort (fn [x y] (let [by-score (compare (:score y 0) (:score x 0))]
-                           (if (zero? by-score) (compare (:at y) (:at x)) by-score))))
+         (sort (fn [x y] (let [by-rank (compare (:rank y 0) (:rank x 0))]
+                           (if (zero? by-rank) (compare (:at y) (:at x)) by-rank))))
          (mapv (fn [v]
-                 (-> (select-keys v [:entry :revision :title :labels :at :standing :score :matches])
+                 (-> (select-keys v [:entry :revision :title :labels :at :standing :score :citations :rank :matches])
                      (cond-> (:retired v) (assoc :retired (:retired v))
                              data-terms (assoc :rows (dq/matching (:data v) data-terms)))
                      (assoc :summary (first (str/split-lines (or (:body v) ""))))))))))
