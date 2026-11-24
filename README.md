@@ -31,6 +31,18 @@ kajero's own append-only store, so writing needs no checkout, branch or merge.
 - **Links** say that one entry `supersedes`, `contradicts` or is `see-also`
   another.
 
+Which verb a judgement about an entry calls for:
+
+| Judgement | Verb |
+| --- | --- |
+| correct, and it saved work | none: cite it (`[[id]]` or `see-also`), which raises its rank |
+| correct, but a selector that should have found it did not | `missed` with that selector, then revise its title or labels |
+| found and misleading | `failed` with evidence, then revise |
+| overtaken by reality since it was written | `failed` with evidence, then revise |
+
+`stale` is not overtaken: it means nobody re-confirmed the entry within its
+kind's window, which says nothing about whether it is still right.
+
 Every revision, observation and link is hashed over its canonical bytes and,
 when the writer has a key, signed with that actor's tik key. A notebook with
 `KAJERO_SIGNING=required` refuses unsigned writes; one with `optional` takes

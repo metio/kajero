@@ -57,8 +57,8 @@ Selector terms, all of which must hold, each optionally prefixed `not`:
 `link=<entry id>` (linked to that entry, in either direction),
 `link:<type>=<entry id>` (linked by `supersedes`, `contradicts` or
 `see-also`), `schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
-`unsigned`, `superseded`, `retired`, `coverage` (the records of questions
-asked), and `~text` (or a bare word) for title,
+`unsigned`, `superseded`, `retired`, `missed` (entries a search missed),
+`coverage` (the records of questions asked), and `~text` (or a bare word) for title,
 body, labels and data. It is tik's `--where` grammar. Retired entries are
 left out unless the selector names `retired`.
 
@@ -206,6 +206,21 @@ writer's revision from an older copy.
 Record an observation only from a fresh check - a command you ran, a page
 you fetched - never from having read the entry. Reading and agreeing is not
 evidence, and it counts for nothing.
+
+Each judgement you form about an entry calls for one verb:
+
+| What you found | What to do |
+| --- | --- |
+| It was correct and it saved you work | Record nothing about it. Cite it - `[[id]]` in the body of what you write, or a `see-also` link - because the citation is the record, and search ranks cited entries higher. |
+| It was correct, but the selector you ran did not find it | Observe `missed` with that selector, then revise its title or labels with the words you searched for. |
+| You found it, and it misled you | Observe `failed` with the evidence that disproves it, then revise it. |
+| It was right when written, but reality has overtaken it (what it asks for has shipped, what it describes has changed) | Also `failed` with the evidence, then revise. An entry is judged against reality today, not against the day it was written. |
+
+Overtaken is not the same as `stale`. `stale` only says nobody re-confirmed
+the entry within its kind's window: an entry confirmed yesterday can be
+overtaken today, and one nobody has looked at for a year can still be
+right. `stale` asks for a fresh check; overtaken is the result of one, and
+the result is `failed`.
 
 - `held`: your check confirmed the current revision.
 - `failed`: your check contradicts it. Evidence is required, and the entry
