@@ -70,6 +70,16 @@ plenty, while `cert-manager|certificate|issuer` returns the union, with the
 entries holding more of the words first. `not a|b` excludes entries holding
 any of them. A `data:` term cannot be one of the alternatives.
 
+With text terms, results come ordered by `rank = score + min(citations,
+3)`: `score` weighs a match in the title 12, labels 6, body 2 and data 1,
+and `citations` counts the entries whose current revision names the result
+as `[[<id>]]` in the body or links to it by `see-also`. Citing an entry
+that shaped your write is how it ranks higher for the next reader, so name
+the entries you built on as `[[<id>]]`. A `supersedes` or `contradicts`
+link, a reference to itself, and a retired or superseded citer count
+nothing, and the bound keeps a heavily cited single body mention below an entry
+carrying the term in a label or its title.
+
 Before opening a file, search for it with `path=`: two paths name the same
 file when one ends with the other at a segment boundary, so
 `path=helm-charts/cluster-info/templates/_cert-issuer.tpl` finds an entry
