@@ -58,7 +58,8 @@ Selector terms, all of which must hold, each optionally prefixed `not`:
 `link:<type>=<entry id>` (linked by `supersedes`, `contradicts` or
 `see-also`), `schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
 `unsigned`, `superseded`, `retired`, `coverage` (the records of questions
-asked), and `~text` (or a bare word) for title,
+asked), `never-returned` and `returned-unopened` (see below), and `~text`
+(or a bare word) for title,
 body, labels and data. It is tik's `--where` grammar. Retired entries are
 left out unless the selector names `retired`.
 
@@ -102,6 +103,24 @@ method and the day. A coverage record with no answer entries means the
 question was asked and found nothing; no coverage record means it may never
 have been asked. Judge from its population and date whether the survey
 covers what you need before you re-run it.
+
+The server counts, per entry and day, how often a search returned an entry
+and how often it was read, and whether a `kajero_get` followed a search of
+the same MCP session that returned it. You call nothing for this: searching
+and reading are the record. No selector, query text or actor is kept, and
+the counts never change what a search returns or how it ranks. Two terms
+read them:
+
+- `never-returned` picks the entries no search has returned since the
+  counting began (`never-returned=2026-11-01`: since that day). Their title
+  or labels do not match how anybody searches for them.
+- `returned-unopened` picks the entries searches returned at least 3 times
+  that no session opened after any of them (`returned-unopened=10`: at
+  least 10 times). Their title or summary does not match what they hold.
+
+When you tend the notebook, revise the title, labels or first line of such
+an entry so it says what the entry holds. A search naming either term, or
+an empty selector, counts nothing.
 
 Read the standing before trusting an entry. `disputed` means someone found
 the current revision wrong; `stale` means nobody confirmed it for longer

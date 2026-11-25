@@ -19,7 +19,8 @@
             [kajero.select :as select]
             [kajero.standing :as standing]
             [kajero.store :as store]
-            [kajero.tik :as tik])
+            [kajero.tik :as tik]
+            [kajero.usage :as usage])
   (:import (java.time Instant)))
 
 (def ^:dynamic *now*
@@ -34,10 +35,16 @@
   "{:path \"notes.db\"} for SQLite or {:dir \"notes/\"} for flat files, with
    :signing :optional|:required, :actors \"allowed_signers\", and :tik-root, the
    tik store whose tickets evidence may cite as tik:<id>. :tik-status replaces
-   the lookup of a ticket, for tests."
-  [{:keys [signing actors tik-root tik-status] :or {signing :optional} :as opts}]
-  {:store (store/open opts) :signing signing :actors actors
-   :tik-status (or tik-status (when tik-root (tik/status-in tik-root)))})
+   the lookup of a ticket, for tests.
+
+   Searches and reads made through search! and open! are counted beside
+   the notebook - see kajero.usage: in the database's usage tables, or in
+   <dir>.usage.edn next to a flat-file notebook."
+  [{:keys [signing actors tik-root tik-status dir] :or {signing :optional} :as opts}]
+  (let [s (store/open opts)]
+    {:store s :signing signing :actors actors
+     :usage (usage/recorder (if dir (usage/file-log (usage/beside dir)) (usage/sqlite-log (:conn s))))
+     :tik-status (or tik-status (when tik-root (tik/status-in tik-root)))}))
 
 (defn- check-tickets!
   "Refuses evidence citing a ticket the bound tik store does not hold. A
@@ -243,10 +250,15 @@
    :score and, per term, where it matched with the text around it; ties
    and selectors without text go most recently changed first. With data:
    terms, each summary carries as :rows the elements of its data they pick
-   together - see kajero.data-query. Retired entries are left out unless the selector names `retired`."
+   together - see kajero.data-query. Retired entries are left out unless the selector names `retired`.
+   A never-returned or returned-unopened term reads the usage counts, and
+   refuses with :kajero/usage-unreadable when they can not be read. A
+   search counts nothing; search! does."
   [nb selector]
   (let [pred (cond-> (select/compile selector)
                (not (select/names? selector "retired")) (every-pred (complement :retired?)))
+        counts (when (select/reads-usage? selector) (usage/counts (:usage nb)))
+        row-of (if counts (fn [v] (assoc (row v) :usage (usage/of-entry counts (:entry v)))) row)
         terms (select/text-terms selector)
         data-terms (not-empty (select/data-terms selector))
         ranked (fn [v] (if (seq terms)
@@ -255,7 +267,7 @@
                          v))]
     (->> (entry-ids nb)
          (map #(view nb %))
-         (filter (comp pred row))
+         (filter (comp pred row-of))
          (map ranked)
          (sort (fn [x y] (let [by-score (compare (:score y 0) (:score x 0))]
                            (if (zero? by-score) (compare (:at y) (:at x)) by-score))))
@@ -264,6 +276,42 @@
                      (cond-> (:retired v) (assoc :retired (:retired v))
                              data-terms (assoc :rows (dq/matching (:data v) data-terms)))
                      (assoc :summary (first (str/split-lines (or (:body v) ""))))))))))
+
+(defn search!
+  "The search, counting that it returned its entries, for `session` when
+   there is one - see kajero.usage. A selector naming no term, or reading
+   the counts itself, counts nothing. The counting never changes the
+   result, and a count that can not be written is logged and dropped."
+  [nb session selector]
+  (let [results (search nb selector)]
+    (when (select/retrieval? selector)
+      (usage/searched! (:usage nb) session (mapv :entry results) (now)))
+    results))
+
+(defn open!
+  "The entry, as `entry` reads it, counting that it was read and whether a
+   search of the same `session` returned it before. Nothing is counted for
+   an entry that does not exist."
+  [nb session id]
+  (let [e (entry nb id)]
+    (when e (usage/opened! (:usage nb) session id (now)))
+    e))
+
+(defn start-session!
+  "A new session for the counts of search! and open!, by its id."
+  [nb]
+  (usage/start-session! (:usage nb) (now)))
+
+(defn live-session
+  "`id` when it names a session start-session! began and that is not
+   over, else nil."
+  [nb id]
+  (usage/live-session (:usage nb) id (now)))
+
+(defn usage-since
+  "The day the counting began, or nil when nothing was counted yet."
+  [nb]
+  (:since (usage/counts (:usage nb))))
 
 (defn history
   "Every revision, observation and link of the entry, oldest first. An
