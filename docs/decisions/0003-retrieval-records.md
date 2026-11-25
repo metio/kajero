@@ -1,6 +1,6 @@
 ---
 type: decision
-status: proposed
+status: accepted
 date: 2026-11-24
 title: Search retrievals and opens are counted beside the notebook, never recorded in it, and ranking does not use them
 supersedes: null
@@ -10,7 +10,7 @@ supersedes: null
 
 ## Decision
 
-Proposed, not yet accepted.
+Accepted on 2026-11-25.
 
 **kajero counts, per entry and per day, how often a search returned the
 entry and how often it was opened. The counts live in a local usage file
@@ -47,7 +47,11 @@ lives with that server.
    - `bb kajero usage` prints both lists.
 
    The `missed` observation outcome (request 03ff7fc0) is where an agent
-   records the fix.
+   records the fix. Recording one runs no search, so it counts nothing:
+   the search whose selector it names was counted when it ran, with what
+   it returned, and counting the observation again would add a `returned`
+   the searcher never saw. A search naming the `missed` term returns
+   entries like any other, so it counts them.
 5. **Ranking does not use them.** Ranking is term match plus incoming
    citations (request c5465ecf). Usage stays out of it, for two reasons:
    - a retrieval count rewards whatever already ranks high, so it feeds
@@ -94,7 +98,7 @@ Three facts of the current design decide where such records can live:
    option is cheap and deletable, and it puts no read log in the replicated
    set. It answers both of the request's questions per server. Against it,
    the counts are not comparable across copies, and they cannot be audited.
-   Proposed, as the decision above.
+   Accepted, as the decision above.
 3. **Record nothing.** The `missed` outcome (request 03ff7fc0) and citation
    ranking (request c5465ecf) cover part of the need: a failed search that
    a later route recovers, and an entry that shaped other work. Neither

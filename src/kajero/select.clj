@@ -22,6 +22,12 @@
                                 question was asked, with its population,
                                 method and day - `coverage label:system=dns`
                                 lists what has been surveyed about DNS
+     never-returned             no search has returned the entry since the
+                                counting began; never-returned=2026-11-01
+                                since that day - see kajero.usage
+     returned-unopened          searches returned the entry at least 3
+                                times and no session opened it after one of
+                                them; returned-unopened=10 at least 10 times
      data:host                  the data has the field
      data:hosts.domain=w-1      the field, through maps and lists, has the value
      ~text  (or a bare word)    title, body, labels or data contain it
@@ -46,7 +52,10 @@
   (:refer-clojure :exclude [compile])
   (:require [clojure.string :as str]
             [kajero.data-query :as dq]
-            [kajero.paths :as paths]))
+            [kajero.paths :as paths]
+            [kajero.usage :as usage])
+  (:import (java.time LocalDate)
+           (java.time.format DateTimeParseException)))
 
 (defn- alternation? [term] (str/includes? term "|"))
 
@@ -85,6 +94,45 @@
                                                   (str/starts-with? other id)))
                              (:links row))))))
 
+(def usage-terms
+  "The terms that read the usage counts beside the notebook."
+  #{"never-returned" "returned-unopened"})
+
+(def returned-unopened-default
+  "How often an entry must have been returned for returned-unopened to
+   pick it, when the term names no number."
+  3)
+
+(defn- usage-term
+  "The usage term `term` names, with or without its =argument, or nil."
+  [term]
+  (usage-terms (first (str/split term #"=" 2))))
+
+(defn- bad-term!
+  [message term]
+  (throw (ex-info (str message ": " term) {:reason :select/bad-term :term term})))
+
+(defn- never-returned-pred
+  [term]
+  (let [[_ since] (str/split term #"=" 2)]
+    (when (some? since)
+      (try (LocalDate/parse since)
+           (catch DateTimeParseException _
+             (bad-term! "never-returned= takes a day as YYYY-MM-DD" term))))
+    (fn [row] (zero? (usage/returned-since (:usage row) since)))))
+
+(defn- returned-unopened-pred
+  [term]
+  (let [[_ n] (str/split term #"=" 2)
+        at-least (if (nil? n)
+                   returned-unopened-default
+                   (or (when (re-matches #"[1-9][0-9]{0,8}" n) (parse-long n))
+                       (bad-term! "returned-unopened= takes a whole number of at least 1" term)))]
+    (fn [row]
+      (let [u (:usage row)]
+        (and (>= (usage/total u :returned) at-least)
+             (zero? (usage/total u :opened-after-return)))))))
+
 (defn- term-pred
   [term]
   (cond
@@ -102,6 +150,9 @@
     (= term "retired") :retired?
     (= term "missed") :missed?
     (= term "coverage") #(= "coverage" (get-in % [:labels "kind"]))
+
+    (= "never-returned" (usage-term term)) (never-returned-pred term)
+    (= "returned-unopened" (usage-term term)) (returned-unopened-pred term)
 
     (str/starts-with? term "label:")
     (let [[k v] (str/split (subs term 6) #"=" 2)]
@@ -146,8 +197,22 @@
   [selector term]
   (boolean (some #{term} (terms selector))))
 
+(defn reads-usage?
+  "Whether the selector has a usage term anywhere, after `not` or in an
+   alternation too: such a search is a report on the counts."
+  [selector]
+  (boolean (some usage-term (mapcat #(str/split % #"\|") (terms selector)))))
+
+(defn retrieval?
+  "Whether a search with this selector counts as returning its entries: it
+   names at least one term, so it is not a listing of every entry, and it
+   is no report on the counts, which would count the entries it reports."
+  [selector]
+  (and (boolean (seq (terms selector))) (not (reads-usage? selector))))
+
 (defn- text-term? [t]
   (and (not (contains? #{"not" "disputed" "stale" "unsigned" "superseded" "retired" "outdated-schema" "coverage" "missed"} t))
+       (not (usage-term t))
        (not (str/includes? t "="))
        (not (str/starts-with? t "label:"))
        (not (data-term? t))))

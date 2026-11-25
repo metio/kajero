@@ -35,6 +35,9 @@
   restore ID --base REV [--evidence E...]              lift a retirement
   link SOURCE supersedes|see-also|contradicts TARGET
   migrate MIGRATION-ID [dry-run]          move entries onto the migration's schema
+  usage [--since DAY] [--min N]           entries no search returned (since DAY,
+                                          YYYY-MM-DD) and entries returned at least
+                                          N times (default 3) that nobody opened
 
   A body or data of - reads it from stdin. Data is EDN; an entry labelled
   kind=schema holds a malli schema, and schema=ID checks data against one.
@@ -71,12 +74,20 @@
 (defn- writer []
   {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")})
 
+(defn- usage-report
+  "The two lists of the usage counts, with the day the counting began."
+  [nb since at-least]
+  (let [summary #(select-keys % [:entry :title :labels])]
+    {:since (k/usage-since nb)
+     :never-returned (mapv summary (k/search nb (cond-> "never-returned" since (str "=" since))))
+     :returned-unopened (mapv summary (k/search nb (cond-> "returned-unopened" at-least (str "=" at-least))))}))
+
 (defn- run-command
   [nb [cmd & args]]
   (let [[pos flags] (options args)]
     (case cmd
-      "search" (k/search nb (str/join " " pos))
-      "get" (k/entry nb (first pos))
+      "search" (k/search! nb nil (str/join " " pos))
+      "get" (k/open! nb nil (first pos))
       "history" (k/history nb (first pos))
       "labels" (k/labels nb)
       "write" (k/write! nb (merge (writer) {:title (first pos) :body (one flags :body)
@@ -98,6 +109,7 @@
       "link" (let [[source type target] pos]
                (k/link! nb (merge (writer) {:source source :type type :target target})))
       "migrate" (k/migrate! nb (first pos) (assoc (writer) :dry-run? (= "dry-run" (second pos))))
+      "usage" (usage-report nb (one flags :since) (one flags :min))
       (throw (ex-info usage {:reason :kajero/usage})))))
 
 (defn -main
