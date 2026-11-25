@@ -29,10 +29,10 @@
 
 (def tools
   [{:name "kajero_search"
-    :description "Entries a selector picks, as summaries. With text terms the best match comes first: a match in the title counts most, then labels, body and data, and each summary carries its score and, per term, the field it matched in with the text around it, so you can judge a hit without reading the entry. Without text terms, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, data:field, data:field=value (a dotted field walks the entry's data through maps and into every map of a list, as in data:hosts.domain=x; terms about one list must hold in the same element, and each result carries the deepest matching elements as rows), actor=name, ticket=<tik ticket id>, path=<repository path> (the title, body or evidence names that file; one path ending with the other at a segment boundary counts, so path=helm-charts/x/templates/a.tpl finds an entry citing templates/a.tpl), link=<entry id> (linked to that entry in either direction), link:<type>=<entry id> (linked by supersedes, contradicts or see-also), schema-revision=<hash>, outdated-schema, disputed, stale, unsigned, superseded, retired, coverage (kind=coverage entries: which questions were asked, over what population, how and when - search coverage with the subject's labels before concluding from an empty result that nothing is known), ~text. Join terms with | to accept any of them, as in calico|coredns or label:kind=gotcha|label:kind=fact: use it when the wording is a guess, because two separate words must both match; the entries holding more of the alternatives rank first, and a data: term cannot be an alternative. Retired entries are left out unless the selector names retired. An empty selector picks every entry that is not retired."
+    :description "Entries a selector picks, as summaries. With text terms the best match comes first: a match in the title counts most, then labels, body and data, and each summary carries its score and, per term, the field it matched in with the text around it, so you can judge a hit without reading the entry. Without text terms, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, data:field, data:field=value (a dotted field walks the entry's data through maps and into every map of a list, as in data:hosts.domain=x; terms about one list must hold in the same element, and each result carries the deepest matching elements as rows), actor=name, ticket=<tik ticket id>, path=<repository path> (the title, body or evidence names that file; one path ending with the other at a segment boundary counts, so path=helm-charts/x/templates/a.tpl finds an entry citing templates/a.tpl), link=<entry id> (linked to that entry in either direction), link:<type>=<entry id> (linked by supersedes, contradicts or see-also), schema-revision=<hash>, outdated-schema, disputed, stale, unsigned, superseded, retired, coverage (kind=coverage entries: which questions were asked, over what population, how and when - search coverage with the subject's labels before concluding from an empty result that nothing is known), never-returned (no search has returned the entry since the counting began; never-returned=YYYY-MM-DD since that day: its title or labels do not match how it is searched for), returned-unopened (searches returned it at least 3 times and no session opened it with kajero_get after any of them; returned-unopened=N for at least N: its title or summary does not match what it holds), ~text. Join terms with | to accept any of them, as in calico|coredns or label:kind=gotcha|label:kind=fact: use it when the wording is a guess, because two separate words must both match; the entries holding more of the alternatives rank first, and a data: term cannot be an alternative. Retired entries are left out unless the selector names retired. An empty selector picks every entry that is not retired. The server counts, per entry and day, how often a search returned it; it keeps no selector or query text, and a search with an empty selector or a usage term counts nothing."
     :inputSchema {:type "object" :properties {:selector {:type "string"}}}}
    {:name "kajero_get"
-    :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing, links, the observations a later one corrected (corrections), and the tik tickets its records cite with their current stages. A schema entry also lists the entries using it (used_by)."
+    :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing, links, the observations a later one corrected (corrections), and the tik tickets its records cite with their current stages. A schema entry also lists the entries using it (used_by). The server counts the read, and whether a search of this session returned the entry before it."
     :inputSchema {:type "object" :properties entry-arg :required ["entry"]}}
    {:name "kajero_history"
     :description "Every revision, observation and link of an entry, oldest first, with hashes and authors."
@@ -160,10 +160,10 @@
         :else (recur more (rest rs) (conj acc (first rs)))))))
 
 (defn- call-checked
-  [nb writer tool {:strs [selector entry title body labels evidence base outcome revision corrects source type target data_edn migration dry_run reason observations]}]
+  [nb writer session tool {:strs [selector entry title body labels evidence base outcome revision corrects source type target data_edn migration dry_run reason observations]}]
   (case tool
-    "kajero_search" (k/search nb selector)
-    "kajero_get" (let [e (or (k/entry nb entry) (throw (ex-info (str "no entry " entry) {:reason :kajero/no-entry})))]
+    "kajero_search" (k/search! nb session selector)
+    "kajero_get" (let [e (or (k/open! nb session entry) (throw (ex-info (str "no entry " entry) {:reason :kajero/no-entry})))]
                    (cond-> e
                      (contains? e :data) (assoc :data_edn (pr-str (:data e)))
                      (contains? e :used-by) (-> (assoc :used_by (:used-by e)) (dissoc :used-by))))
@@ -184,10 +184,12 @@
     (throw (ex-info (str "unknown tool " tool) {:reason :kajero/unknown-tool}))))
 
 (defn call-tool
-  "Runs one tool; returns the result, or throws ex-info for a refusal."
-  [nb writer tool args]
-  (check-arguments! tool args)
-  (call-checked nb writer tool (resolve-ids nb args)))
+  "Runs one tool; returns the result, or throws ex-info for a refusal.
+   Searches and reads count for `session` - see kajero.core/search!."
+  ([nb writer tool args] (call-tool nb writer nil tool args))
+  ([nb writer session tool args]
+   (check-arguments! tool args)
+   (call-checked nb writer session tool (resolve-ids nb args))))
 
 (defn- refusal-text
   [e]
@@ -201,36 +203,39 @@
   ["2025-06-18" "2025-03-26" "2024-11-05"])
 
 (defn handle
-  "The response to one request line, or nil for a notification."
-  [nb writer line]
-  (let [msg (try (json/parse-string line) (catch Exception _ ::unreadable))]
-    (if-not (map? msg)
-      {:jsonrpc "2.0" :id nil :error {:code -32700 :message "parse error: not a JSON object"}}
-      (let [{:strs [id method params]} msg
-            respond (fn [result] {:jsonrpc "2.0" :id id :result result})]
-        (try
-          (case method
-            "initialize" (respond {:protocolVersion (let [asked (get params "protocolVersion")]
-                                                      (if (some #{asked} protocol-versions) asked (first protocol-versions)))
-                                   :capabilities {:tools {}}
-                                   :serverInfo {:name "kajero" :version "1"}})
-            "tools/list" (respond {:tools tools})
-            "tools/call" (let [args (get params "arguments")]
-                           (try
-                             (respond {:content [{:type "text"
-                                                  :text (json/generate-string
-                                                         (call-tool nb writer (get params "name")
-                                                                    (if (map? args) args {})))}]
-                                       :isError false})
-                             (catch clojure.lang.ExceptionInfo e
-                               (respond {:content [{:type "text" :text (refusal-text e)}] :isError true}))))
-            (when id (respond {})))
+  "The response to one request line, or nil for a notification. Searches
+   and reads count for `session`, the id of the MCP session the line
+   belongs to, or for none."
+  ([nb writer line] (handle nb writer nil line))
+  ([nb writer session line]
+   (let [msg (try (json/parse-string line) (catch Exception _ ::unreadable))]
+     (if-not (map? msg)
+       {:jsonrpc "2.0" :id nil :error {:code -32700 :message "parse error: not a JSON object"}}
+       (let [{:strs [id method params]} msg
+             respond (fn [result] {:jsonrpc "2.0" :id id :result result})]
+         (try
+           (case method
+             "initialize" (respond {:protocolVersion (let [asked (get params "protocolVersion")]
+                                                       (if (some #{asked} protocol-versions) asked (first protocol-versions)))
+                                    :capabilities {:tools {}}
+                                    :serverInfo {:name "kajero" :version "1"}})
+             "tools/list" (respond {:tools tools})
+             "tools/call" (let [args (get params "arguments")]
+                            (try
+                              (respond {:content [{:type "text"
+                                                   :text (json/generate-string
+                                                          (call-tool nb writer session (get params "name")
+                                                                     (if (map? args) args {})))}]
+                                        :isError false})
+                              (catch clojure.lang.ExceptionInfo e
+                                (respond {:content [{:type "text" :text (refusal-text e)}] :isError true}))))
+             (when id (respond {})))
           ;; The protocol boundary: any failure, an Error included, becomes a
           ;; JSON-RPC error answer instead of ending the session.
-          #_{:splint/disable [lint/catch-throwable]}
-          (catch Throwable e
-            {:jsonrpc "2.0" :id id
-             :error {:code -32603 :message (str "internal error: " (or (ex-message e) (.getName (class e))))}}))))))
+           #_{:splint/disable [lint/catch-throwable]}
+           (catch Throwable e
+             {:jsonrpc "2.0" :id id
+              :error {:code -32603 :message (str "internal error: " (or (ex-message e) (.getName (class e))))}})))))))
 
 (defn -main
   [& _]
@@ -240,10 +245,12 @@
                         :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
                         :actors (env "KAJERO_ACTORS")
                         :tik-root (env "KAJERO_TIK_ROOT")})
-        writer {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")}]
+        writer {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")}
+        ;; A stdio connection is one MCP session from start to end.
+        session (k/start-session! nb)]
     (loop []
       (when-let [line (read-line)]
-        (when-let [response (handle nb writer line)]
+        (when-let [response (handle nb writer session line)]
           (println (json/generate-string response))
           (flush))
         (recur)))))
