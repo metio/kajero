@@ -181,6 +181,10 @@ label:system=calico label:kind not disputed ~apiservices
 | `retired` | that somebody retired |
 | `missed` | whose current revision a search missed: they need better titles or labels |
 | `coverage` | labelled `kind=coverage`: the records of questions asked |
+| `never-returned` | that no search returned since the counting began |
+| `never-returned=YYYY-MM-DD` | that no search returned on that day or later |
+| `returned-unopened` | that searches returned at least 3 times and no session opened after any of them |
+| `returned-unopened=N` | the same, for at least N returns |
 | `data:field` | whose data has the field |
 | `data:field=value` | whose data has the field with the value |
 | `~text` or a bare word | whose title, body, labels or data contain the text |
@@ -246,6 +250,42 @@ ticket, not an entry, and does not count. The counts are derived from the
 revisions and links on each search and never stored. Equal ranks, and
 searches without text, go most recently changed first.
 
+## Search retrievals and opens
+
+kajero counts, per entry and UTC day, how often a search returned the entry
+(`returned`), how often it was read (`opened`), and how many of those reads
+followed a search of the same MCP session that returned it
+(`opened-after-return`). Searches over MCP, the command line and the `/view`
+page count, as do reads by `kajero_get`, `kajero get` and the entry page; the
+front page, saved pages and the `.edn` reads for tools do not. A search with
+an empty selector, or one naming `never-returned` or `returned-unopened`,
+counts nothing. A search naming `missed`, like one naming `disputed` or
+`coverage`, counts the entries it returns. Recording a `missed` observation
+runs no search and counts nothing: the search it reports was counted when
+it ran, with the results it returned. No selector, query text, result
+position or actor is kept, and ranking, citations included, does not read
+the counts.
+
+A session is the `Mcp-Session-Id` the HTTP endpoint answers an `initialize`
+with, or one stdio connection. It is held in memory for 30 minutes after
+its last search, and an id the server did not mint counts as none. Reads
+from the command line and the pages have no session, so they add to
+`opened` only.
+
+The counts live beside the notebook and never in it: in the `usage`,
+`usage_folded` and `usage_meta` tables of the database, or in
+`<dir>.usage.edn` next to a flat-file notebook. They are unsigned, deleting
+them loses only the measurement, and daily rows older than 180 days fold
+into one total per entry. A count that can not be written is logged on
+stderr and dropped, and the search or read answers as it would have; a
+report that can not read the counts is refused rather than answered as if
+nothing was returned.
+
+```sh
+bb kajero usage                       # both lists, and the day counting began
+bb kajero usage --since 2026-11-01 --min 10
+```
+
 ## Retiring an entry
 
 An entry written by mistake, as a test or twice is retired: `kajero retire
@@ -268,6 +308,7 @@ bb kajero observe <id> missed --selector 'etherpad lernraum'
 echo '[{:entry "e8da4903" :outcome "held" :evidence ["book dns"]}]' | bb kajero observe-many -
 bb kajero revise <id> --base <revision> --body -
 bb kajero labels
+bb kajero usage
 ```
 
 `observe-many` records one observation per item and judges each on its own:

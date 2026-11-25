@@ -298,7 +298,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
   (map #(k/entry nb (:entry %)) (k/search nb selector)))
 
 (defn- view [nb {:strs [selector group-by]} token]
-  (let [entries (full-entries nb selector)]
+  (let [entries (map #(k/entry nb (:entry %)) (k/search! nb nil selector))]
     (layout {:title (if (str/blank? selector) "Every entry" selector) :selector selector}
             [:h1 (if (str/blank? selector) "Every entry" "View")]
             [:p.selector (or (not-empty selector) "(every entry)") " · " (count entries) " entries"]
@@ -354,7 +354,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
    [:div.selector {:title hash} (subs hash 0 (min 19 (count hash)))]])
 
 (defn- entry-page [nb id token]
-  (when-let [{:keys [title body labels standing evidence links revision actor at signed? tickets retired] :as e} (k/entry nb id)]
+  (when-let [{:keys [title body labels standing evidence links revision actor at signed? tickets retired] :as e} (k/open! nb nil id)]
     (layout {:title title}
             [:article.sheet
              [:h1 title]
@@ -561,8 +561,13 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
    Anything on this machine can reach 127.0.0.1, so a request needs the
    bearer token, and one carrying an Origin other than this server's own is
    refused, which keeps a web page from driving it through DNS rebinding.
-   Writes are made as the MCP writer, never as the writer of the pages."
-  [nb {:keys [token writer port]} {:keys [method origin authorization body]}]
+   Writes are made as the MCP writer, never as the writer of the pages.
+
+   An initialize answers with a new Mcp-Session-Id, and a later request
+   carrying it counts its searches and reads for that session - see
+   kajero.usage. An id this server did not mint, or whose session is over,
+   counts as no session."
+  [nb {:keys [token writer port]} {:keys [method origin authorization body session]}]
   (when token
     (cond
       (and origin (not ((own-origins port) origin)))
@@ -578,9 +583,13 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
       {:status 405 :headers {"Content-Type" "text/plain; charset=utf-8" "Allow" "POST"} :body ""}
 
       :else
-      (if-let [response (mcp/handle nb writer body)]
-        {:status 200 :headers {"Content-Type" "application/json"} :body (json/generate-string response)}
-        {:status 202 :headers {"Content-Type" "application/json"} :body ""}))))
+      (let [response (mcp/handle nb writer (k/live-session nb session) body)
+            started (when (get-in response [:result :serverInfo]) (k/start-session! nb))]
+        (if response
+          {:status 200
+           :headers (cond-> {"Content-Type" "application/json"} started (assoc "Mcp-Session-Id" started))
+           :body (json/generate-string response)}
+          {:status 202 :headers {"Content-Type" "application/json"} :body ""})))))
 
 (defn request-guard
   "A refusal for a request this server must not answer, else nil.
@@ -624,6 +633,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
      :origin (.getFirst headers "Origin")
      :host (.getFirst headers "Host")
      :authorization (.getFirst headers "Authorization")
+     :session (.getFirst headers "Mcp-Session-Id")
      :cross-site? (= "cross-site" (.getFirst headers "Sec-Fetch-Site"))
      :too-large? too-large?
      :body body
