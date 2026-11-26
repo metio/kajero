@@ -41,14 +41,22 @@
 (defprotocol Summary
   (head [store entry] "The entry's current revision, or nil.")
   (authorship [store entry]
-    "{:actors #{...} :evidence #{...}}: the actors and the evidence items of
-     every revision of the entry."))
+    "{:actors #{...} :evidence [...]}: the actors of every revision of the
+     entry, and the evidence items of every revision, each once, in the
+     order the revisions and their evidence name them."))
+
+(defn ordered-evidence
+  "The items of `evidence-lists`, given oldest revision first, each once
+   in the order they first appear."
+  [evidence-lists]
+  (into [] (comp cat (distinct)) evidence-lists))
 
 (defn summarize
-  "The authorship of `revisions`, as Summary/authorship answers it."
+  "The authorship of `revisions`, oldest first, as Summary/authorship
+   answers it."
   [revisions]
   {:actors (into #{} (map :actor) revisions)
-   :evidence (into #{} (mapcat :evidence) revisions)})
+   :evidence (ordered-evidence (map :evidence revisions))})
 
 (extend-protocol Summary
   Object

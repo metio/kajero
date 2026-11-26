@@ -308,10 +308,10 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
             (if (seq recent) (map #(sheet nb % false) recent) [:p.empty "The notebook is empty."]))))
 
 (defn- full-entries [nb selector]
-  (map #(k/entry nb (:entry %)) (k/search nb selector)))
+  (k/entries nb (map :entry (k/search nb selector))))
 
 (defn- view [nb {:strs [selector group-by]} token]
-  (let [entries (map #(k/entry nb (:entry %)) (k/search! nb nil selector))]
+  (let [entries (k/entries nb (map :entry (k/search! nb nil selector)))]
     (layout {:title (if (str/blank? selector) "Every entry" selector) :selector selector}
             [:h1 (if (str/blank? selector) "Every entry" "View")]
             [:p.selector (or (not-empty selector) "(every entry)") " · " (count entries) " entries"]

@@ -2,11 +2,13 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.compute-once-test
   "Reads compute what they return and nothing else: the home page judges
-   only the signatures it shows, and kept citations follow every change."
+   only the signatures it shows, pages never ask tik, an entry is read from
+   the index, and kept citations follow every change."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
             [kajero.index :as index]
+            [kajero.store :as store]
             [kajero.test-keys :as keys]
             [kajero.test-temp :as temp]
             [kajero.verify :as verify]
@@ -79,3 +81,36 @@
         (is (= "Erste Zeile ß" (:summary hit)) term)
         (is (every? #(str/includes? (str/lower-case (:snippet %)) "stra") (filter #(= "title" (:field %)) (:matches hit)))
             term)))))
+
+(deftest pages-never-ask-tik
+  (let [calls (atom 0)
+        nb (k/notebook {:dir (str (temp/temp-dir) "/notes")
+                        :tik-status (fn [id] (swap! calls inc) {:ticket id :title "a ticket" :current ["proven"]})})
+        {:keys [entry]} (k/write! nb {:title "cited" :labels {"kind" "fact"} :actor "claude"
+                                      :evidence ["tik:6afff677-67e5-45a0-aadb-551ef2348cdd"]})]
+    (k/save-page! nb {:name "facts" :selector "label:kind=fact" :actor "seb"})
+    (reset! calls 0)
+    (doseq [[path query] [["/"] ["/view" "selector=label%3Akind%3Dfact"] ["/view"] ["/p/facts"]]]
+      (is (= 200 (:status (get-page nb path query))) path))
+    (is (zero? @calls) "no page of several entries asks tik")
+    (testing "the entry's own page shows its tickets"
+      (is (str/includes? (:body (get-page nb (str "/e/" entry))) "a ticket"))
+      (is (pos? @calls)))))
+
+(deftest an-entry-is-read-from-the-index
+  (let [nb (k/notebook {:dir (str (temp/temp-dir) "/notes")})
+        t1 "tik:5084203b-b89a-479e-9075-02fdf34806d9"
+        t2 "tik:6afff677-67e5-45a0-aadb-551ef2348cdd"
+        {:keys [entry]} (k/write! nb {:title "x" :labels {"kind" "fact"} :actor "claude" :evidence [t2 "a"]})]
+    (k/revise! nb entry {:base (:revision (k/entry nb entry)) :body "y" :actor "seb" :evidence [t1 t2]})
+    (k/observe! nb entry {:outcome "held" :evidence ["tik:00000000-0000-4000-8000-000000000000"] :actor "seb"})
+    (let [reads (atom 0)
+          e (with-redefs [store/revisions (fn [& _] (swap! reads inc) [])]
+              (k/entry nb entry))]
+      (is (zero? @reads) "no revision is read from the store")
+      (is (= ["6afff677-67e5-45a0-aadb-551ef2348cdd" "5084203b-b89a-479e-9075-02fdf34806d9"
+              "00000000-0000-4000-8000-000000000000"]
+             (map :ticket (:tickets e)))
+          "tickets in the order the revisions, then the observations, cite them"))
+    (testing "entries reads what entry reads, without the tickets"
+      (is (= [(dissoc (k/entry nb entry) :tickets)] (k/entries nb [entry "missing"]))))))

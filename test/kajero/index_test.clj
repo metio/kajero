@@ -75,7 +75,7 @@
       (let [fresh (index/indexed (store/open (location)))]
         (fill! fresh)
         (is (= (answers (index/inner fresh)) (answers fresh)))))
-    (is (= {:actors #{"claude" "seb"} :evidence #{"e1" "tik:x"}} (store/authorship idx "a")))
+    (is (= {:actors #{"claude" "seb"} :evidence ["e1" "tik:x"]} (store/authorship idx "a")))
     (is (= "A2" (:title (store/head idx "a"))) "the head is the revision with the highest :seq")
     (is (nil? (store/head idx "c")))))
 
