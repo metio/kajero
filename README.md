@@ -436,11 +436,42 @@ and is signed with `KAJERO_KEY` when it is set.
 claude mcp add kajero -e KAJERO_DB=$HOME/notes.db -e KAJERO_ACTOR=claude -- sh -c 'cd /path/to/kajero && exec clojure -M:mcp'
 ```
 
-## Claude skill
+## Agent skill
 
 `skills/kajero` teaches an agent when to search the notebook, how to write
-and revise entries, and when an observation is evidence. Link it into
-`~/.claude/skills/kajero`.
+and revise entries, and when an observation is evidence. The MCP server
+serves it, over stdio and on `/mcp`, so an agent connected to kajero reads
+the skill of the version it talks to without installing anything. Linking
+the directory into `~/.claude/skills/kajero` still works.
+
+Clients that support the MCP Skills extension (`io.modelcontextprotocol/skills`,
+Claude Code from v2.1.331) list it with `skills/list` and `skills/get`;
+Claude Code names it `kajero:kajero`. Every other client finds
+`skill://kajero/SKILL.md` with `resources/list` and `resources/read`, and
+the server instructions name that URI. The jar and the binary carry the
+skill as classpath resources the build copies from `skills/`, so a release
+serves exactly the files of its commit; a run from the checkout with
+`clojure -M:mcp` serves none.
+
+The extension's manifest gives each file's sha256 digest and size, which
+tells a client the files it read are the ones listed, but not who listed
+them. kajero therefore signs each manifest with the key the server writes
+with (`KAJERO_MCP_KEY` on `/mcp`, `KAJERO_KEY` over stdio), under the
+`ssh-keygen -Y` namespace `kajero-skill-manifest`, and carries the signature
+in the skill entry's `_meta` under `wtf.metio/skill-manifest`. A server
+without a key serves the manifest with `"signed": false` and the reason. To
+check a listing, save the `skills/list` or `skills/get` result and run
+
+```sh
+KAJERO_ACTORS=~/.config/kajero/allowed_signers kajero skill verify listing.json --root skills
+```
+
+which exits 0 only when every entry's signature verifies as its actor under
+that actors file and, with `--root`, every file under the directory matches
+the manifest. An actors line that restricts its key with `namespaces="kajero"`
+must also name `kajero-skill-manifest` for the key's manifests to verify.
+`kajero skill manifest` prints the entries this build serves, signed as
+`KAJERO_ACTOR` when `KAJERO_KEY` is set.
 
 ## Binary and uberjar
 
@@ -479,7 +510,7 @@ To build both locally, with the toolchain from breto and a static zlib
 eval "$(breto env)"
 bb uber            # target/kajero.jar
 bb build-native    # target/kajero.jar and target/kajero
-bb smoke           # serve, MCP, the command line and signatures, against a throwaway notebook
+bb smoke           # serve, MCP, the served skill, the command line and signatures, against a throwaway notebook
 bb smoke java --enable-native-access=ALL-UNNAMED -jar target/kajero.jar
 ```
 

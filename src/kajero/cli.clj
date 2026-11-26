@@ -16,11 +16,14 @@
                      the pinned checkpoint key and where checkpoints live -
                      see kajero.checkpoint/settings; the command line reads
                      checkpoints and never signs one"
-  (:require [clojure.edn :as edn]
+  (:require [cheshire.core :as json]
+            [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.pprint :as pp]
             [clojure.string :as str]
             [kajero.checkpoint :as checkpoint]
-            [kajero.core :as k])
+            [kajero.core :as k]
+            [kajero.skills :as skills])
   (:gen-class))
 
 (def ^:private usage
@@ -45,6 +48,14 @@
                                           N times (default 3) that nobody opened
   checkpoint                              the latest signed checkpoint: its root, age,
                                           the records it covers and those now missing
+  skill manifest                          the skill entries the MCP server serves, signed
+                                          as KAJERO_ACTOR with KAJERO_KEY when both are set
+  skill verify [FILE] [--root DIR]        check the manifest signature of every skill entry
+                                          in FILE (JSON or EDN: an entry, a skills/list or
+                                          skills/get result or response; - or none reads
+                                          stdin) against KAJERO_ACTORS, and with DIR, a
+                                          directory of skill directories, each file's bytes;
+                                          exits 1 unless every entry verifies
 
   A body or data of - reads it from stdin. Data is EDN; an entry labelled
   kind=schema holds a malli schema, and schema=ID checks data against one.
@@ -89,6 +100,50 @@
      :never-returned (mapv summary (k/search nb (cond-> "never-returned" since (str "=" since))))
      :returned-unopened (mapv summary (k/search nb (cond-> "returned-unopened" at-least (str "=" at-least))))}))
 
+(defn- skill-entries
+  "The skill entries in a parsed skills/list or skills/get result, a
+   JSON-RPC response carrying one, a list of entries, or one entry."
+  [x]
+  (let [x (if (and (map? x) (contains? x :result)) (:result x) x)]
+    (cond
+      (sequential? x) (vec x)
+      (contains? x :skills) (vec (:skills x))
+      (contains? x :skill) [(:skill x)]
+      :else [x])))
+
+(defn- read-entries [text]
+  (skill-entries (try (json/parse-string text true)
+                      (catch Exception _ (read-edn text)))))
+
+(defn- skill-command
+  "The result of a skill command, with :kajero/exit 1 in its metadata when
+   an entry does not verify. `getenv` reads the environment."
+  [getenv [sub & args]]
+  (let [[pos flags] (options args)]
+    (case sub
+      "manifest" (let [catalog (or @skills/served (throw (ex-info "this build serves no skill" {:reason :kajero/no-skills})))]
+                   (:skills (skills/list-result catalog (skills/signer {:actor (getenv "KAJERO_ACTOR") :key (getenv "KAJERO_KEY")}))))
+      "verify" (let [f (first pos)
+                     entries (read-entries (if (or (nil? f) (= "-" f)) (slurp *in*) (slurp f)))
+                     root (one flags :root)
+                     results (vec (for [entry entries
+                                        :let [v (skills/verify-entry (getenv "KAJERO_ACTORS") entry)
+                                              e (try (json/parse-string (json/generate-string entry) true)
+                                                     (catch Exception _ nil))
+                                              skill (some->> (:uri e) (re-find #"^skill://([^/]+)/") second)
+                                              differ (when (and root skill)
+                                                       (skills/verify-files e (fn [p]
+                                                                                (let [file (io/file root skill p)]
+                                                                                  (when (.isFile file)
+                                                                                    (java.nio.file.Files/readAllBytes (.toPath file)))))))]]
+                                    (cond-> (assoc v :uri (:uri e))
+                                      root (assoc :files-differ (vec differ)))))]
+                 (with-meta results
+                   {:kajero/exit (if (and (seq results)
+                                          (every? #(and (:verified? %) (empty? (:files-differ %))) results))
+                                   0 1)}))
+      (throw (ex-info usage {:reason :kajero/usage})))))
+
 (defn- run-command
   [nb [cmd & args]]
   (let [[pos flags] (options args)]
@@ -123,16 +178,23 @@
 (defn -main
   [& args]
   (try
-    (let [store {:dir (env "KAJERO_DIR") :path (or (env "KAJERO_DB") "notes.db")}
-          nb (k/notebook (assoc store
-                                :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
-                                :actors (env "KAJERO_ACTORS")
-                                :tik-root (env "KAJERO_TIK_ROOT")
-                                ;; reading checkpoints needs no signing key
-                                :checkpoint (some-> (checkpoint/settings env store) (dissoc :key))))]
-      (try (pp/pprint (run-command nb args))
-           (finally (k/close! nb)))
-      (shutdown-agents))
+    (if (= "skill" (first args))
+      ;; a skill command reads no notebook, so it opens none
+      (let [result (skill-command env (rest args))]
+        (pp/pprint result)
+        (shutdown-agents)
+        (when (= 1 (:kajero/exit (meta result)))
+          (System/exit 1)))
+      (let [store {:dir (env "KAJERO_DIR") :path (or (env "KAJERO_DB") "notes.db")}
+            nb (k/notebook (assoc store
+                                  :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
+                                  :actors (env "KAJERO_ACTORS")
+                                  :tik-root (env "KAJERO_TIK_ROOT")
+                                  ;; reading checkpoints needs no signing key
+                                  :checkpoint (some-> (checkpoint/settings env store) (dissoc :key))))]
+        (try (pp/pprint (run-command nb args))
+             (finally (k/close! nb)))
+        (shutdown-agents)))
     (catch clojure.lang.ExceptionInfo e
       (binding [*out* *err*]
         (println (ex-message e))

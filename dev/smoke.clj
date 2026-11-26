@@ -12,6 +12,12 @@
    - serve answers GET / and, over MCP on /mcp, initialize, tools/list,
      kajero_write signed as the MCP actor, kajero_search and kajero_get,
      which marks the written revision verified;
+   - serve and the stdio MCP server serve the kajero skill through the MCP
+     Skills extension: initialize declares it and names the SKILL.md URI,
+     skills/list lists it with a manifest signed by the MCP actor, and every
+     file read with resources/read is the repository's skills/kajero byte
+     for byte, with the digest and size of the manifest; `kajero skill
+     verify` accepts the signed listing and the repository's files;
    - the stdio MCP server answers initialize;
    - the command line runs search and labels, and an argument beginning
      with -D or -XX: reaches it instead of the runtime;
@@ -105,10 +111,43 @@
       (fail! name "was refused:" (pr-str body)))
     (json/parse-string (get-in result [:content 0 :text]) true)))
 
+(defn- sha256 [^bytes b]
+  (str "sha256:" (apply str (map #(format "%02x" %) (.digest (java.security.MessageDigest/getInstance "SHA-256") b)))))
+
+(defn- check-skills!
+  "Checks the skill a transport serves. `init` is the initialize result,
+   `call` sends a request map and returns the response body, `skills-dir`
+   is the repository's skills/ and `signer` the actor whose key signs the
+   manifest. Returns the skills/list result."
+  [transport init call skills-dir signer]
+  (check! (contains? (get-in init [:capabilities :extensions]) :io.modelcontextprotocol/skills)
+          transport "initialize declares the skills extension")
+  (check! (str/includes? (str (:instructions init)) "skill://kajero/SKILL.md")
+          transport "the server instructions name skill://kajero/SKILL.md")
+  (let [listed (:result (call {:jsonrpc "2.0" :id 101 :method "skills/list" :params {}}))
+        [entry :as entries] (:skills listed)
+        repo (->> (fs/glob (fs/path skills-dir "kajero") "**")
+                  (filter fs/regular-file?)
+                  (map #(str (fs/relativize (fs/path skills-dir "kajero") %)))
+                  sort)
+        meta (get-in entry [:_meta :wtf.metio/skill-manifest])]
+    (check! (= ["skill://kajero/SKILL.md"] (map :uri entries)) transport "skills/list lists the kajero skill")
+    (check! (= (map #(str "skill://kajero/" %) repo) (sort (map :uri (:resources entry))))
+            transport "the manifest lists every file of skills/kajero")
+    (check! (and (true? (:signed meta)) (= signer (:actor meta)) (= "kajero-skill-manifest" (:namespace meta)))
+            transport "the manifest is signed by" signer (pr-str meta))
+    (doseq [{:keys [uri digest size]} (:resources entry)]
+      (let [read (:result (call {:jsonrpc "2.0" :id 102 :method "resources/read" :params {:uri uri}}))
+            served (.getBytes ^String (get-in read [:contents 0 :text]) "UTF-8")
+            file (fs/read-all-bytes (fs/path skills-dir "kajero" (subs uri (count "skill://kajero/"))))]
+        (check! (java.util.Arrays/equals served file) transport uri "is the repository's file byte for byte")
+        (check! (and (= size (alength served)) (= digest (sha256 served))) transport uri "matches its digest and size")))
+    listed))
+
 (defn- run-checks
   "Every check, run with `command` in the temporary directory `tmp`;
    each process started is added to `procs`."
-  [command tmp procs]
+  [command tmp procs skills-dir]
   (let [notes (str (fs/path tmp "notes"))
         human (keypair! tmp "human")
         agent (keypair! tmp "agent")
@@ -141,6 +180,14 @@
                         _ (check! (= "kajero" (get-in body [:result :serverInfo :name])) "MCP initialize over HTTP")
                         tools (get-in (rpc url token session {:jsonrpc "2.0" :id 2 :method "tools/list"}) [:body :result :tools])
                         _ (check! (some #(= "kajero_write" (:name %)) tools) "MCP tools/list names kajero_write")
+                        listed (check-skills! "MCP over HTTP:" (:result body)
+                                              (fn [msg] (:body (rpc url token session msg)))
+                                              skills-dir (:actor agent))
+                        listing (str (fs/path tmp "skills-list.json"))
+                        _ (spit listing (json/generate-string listed))
+                        verified @(run {:out :string :err :string} "skill" "verify" listing "--root" skills-dir)
+                        _ (check! (zero? (:exit verified)) "kajero skill verify accepts the served listing and the repository's files"
+                                  (:out verified) (:err verified))
                         written (tool url token session 3 "kajero_write"
                                       {:title "Smoke test entry" :body "Written by dev/smoke.clj."
                                        :labels {:kind "fact" :system "smoke"}
@@ -177,15 +224,27 @@
         (check! (= 1 (:leaves latest)) "serve ran its shutdown hooks on SIGTERM: its last checkpoint holds the entry"
                 (pr-str latest) err))
         ;; the stdio MCP server
-      (let [mcp (run {:in (str (json/generate-string {:jsonrpc "2.0" :id 1 :method "initialize"
-                                                      :params {:protocolVersion "2025-06-18"}})
-                               "\n")
+      (let [requests (concat [{:jsonrpc "2.0" :id 1 :method "initialize" :params {:protocolVersion "2025-06-18"}}
+                              {:jsonrpc "2.0" :id 101 :method "skills/list" :params {}}]
+                             (for [f (->> (fs/glob (fs/path skills-dir "kajero") "**") (filter fs/regular-file?))]
+                               {:jsonrpc "2.0" :id 102 :method "resources/read"
+                                :params {:uri (str "skill://kajero/" (fs/relativize (fs/path skills-dir "kajero") f))}}))
+            mcp (run {:in (str/join (map #(str (json/generate-string %) "\n") requests))
                       :out :string :err :string}
                      "mcp")
             {:keys [exit out err]} (deref mcp 60000 nil)
-            answer (some-> out str/split-lines first (json/parse-string true))]
+            answers (some->> out str/split-lines (mapv #(json/parse-string % true)))
+            answer (first answers)
+            ;; the answers come in the order of the requests
+            replies (atom (rest answers))
+            call (fn [msg]
+                   (let [r (first @replies)]
+                     (swap! replies rest)
+                     (when-not (= (:id msg) (:id r)) (fail! "stdio MCP answered" (pr-str r) "to" (pr-str msg)))
+                     r))]
         (check! (and (zero? exit) (= "kajero" (get-in answer [:result :serverInfo :name])))
-                "the stdio MCP server answered initialize and ended with stdin" (when-not (zero? exit) err)))
+                "the stdio MCP server answered initialize and ended with stdin" (when-not (zero? exit) err))
+        (check-skills! "MCP over stdio:" (:result answer) call skills-dir (:actor human)))
         ;; the command line
       (let [{:keys [exit out err]} @(run {:out :string :err :string} "search" "label:system=smoke")
             found (when (zero? exit) (edn/read-string out))]
@@ -254,7 +313,7 @@
     ;; SIGTERM and SIGINT end smoke through the shutdown hooks
     (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable (fn [] (cleanup! run-state))))
     (try
-      (run-checks command tmp (:procs run-state))
+      (run-checks command tmp (:procs run-state) (str (fs/absolutize "skills")))
       0
       (catch Exception e
         (binding [*out* *err*]

@@ -30,11 +30,11 @@ jobs:
           persist-credentials: false
       - id: gate
         # Release only when something that ends up in the jar or the binary
-        # moved since the last tag: the code, its dependencies, the build and
-        # the toolchain that compiles it.
+        # moved since the last tag: the code, the skill it serves over MCP,
+        # its dependencies, the build and the toolchain that compiles it.
         uses: metio/ci/needs-release@4ffe6343c7dad75502de503165b853f1959afc8c # 2026.11.21090200
         with:
-          paths: deps.edn build.clj src dev/build-native.sh .breto.edn
+          paths: deps.edn build.clj src resources skills dev/build-native.sh .breto.edn
       - id: version
         if: steps.gate.outputs.needed == 'true'
         # Calendar version (YYYY.M.D + UTC time of day), shared across every metio artifact.

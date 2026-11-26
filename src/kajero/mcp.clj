@@ -7,13 +7,20 @@
    with that key, so every write an agent makes through the server is its
    own record. A refusal answers as a tool error with its reason, and a line
    the server can not read answers as a JSON-RPC error, so the session
-   survives whatever the client sends."
+   survives whatever the client sends.
+
+   The server also serves the kajero agent skill through the MCP Skills
+   extension (see kajero.skills): skills/list and skills/get for clients
+   that declare support for it, and resources/list and resources/read for
+   every client, so one without the extension still finds SKILL.md as an
+   ordinary resource, named in the server instructions."
   (:require [cheshire.core :as json]
             [clojure.edn :as edn]
             [clojure.string :as str]
             [kajero.checkpoint :as checkpoint]
             [kajero.core :as k]
-            [kajero.print :as kp]))
+            [kajero.print :as kp]
+            [kajero.skills :as skills]))
 
 (def ^:private entry-arg {:entry {:type "string" :description "The entry id"}})
 
@@ -210,34 +217,73 @@
    client's revision when it is one of them, else in the newest."
   ["2025-06-18" "2025-03-26" "2024-11-05"])
 
+(def ^:private signers
+  "One manifest signer per writer, so each writer signs each entry once."
+  (atom {}))
+
+(defn- signer-for [writer]
+  (let [w (select-keys writer [:actor :key])]
+    (or (get @signers w)
+        (get (swap! signers #(cond-> % (not (contains? % w)) (assoc w (skills/signer w)))) w))))
+
+(defn- capabilities [catalog]
+  (cond-> {:tools {}}
+    (seq (:skills catalog)) (assoc :resources {}
+                                   ;; no directoryRead: a host answers
+                                   ;; directory queries from the manifest
+                                   :extensions {skills/extension-id {}})))
+
+(defn- protocol-error [id code message]
+  {:jsonrpc "2.0" :id id :error {:code code :message message}})
+
 (defn handle
   "The response to one request line, or nil for a notification. Searches
    and reads count for `session`, the id of the MCP session the line
-   belongs to, or for none."
+   belongs to, or for none. `opts` :skills is the skill catalog to serve,
+   the one the build put on the classpath by default; :sign turns a skill
+   entry into the entry carrying the writer's manifest signature."
   ([nb writer line] (handle nb writer nil line))
-  ([nb writer session line]
+  ([nb writer session line] (handle nb writer session line {}))
+  ([nb writer session line opts]
    (let [msg (try (json/parse-string line) (catch Exception _ ::unreadable))]
      (if-not (map? msg)
        {:jsonrpc "2.0" :id nil :error {:code -32700 :message "parse error: not a JSON object"}}
        (let [{:strs [id method params]} msg
+             sign (or (:sign opts) (signer-for writer))
              respond (fn [result] {:jsonrpc "2.0" :id id :result result})]
          (try
-           (case method
-             "initialize" (respond {:protocolVersion (let [asked (get params "protocolVersion")]
-                                                       (if (some #{asked} protocol-versions) asked (first protocol-versions)))
-                                    :capabilities {:tools {}}
-                                    :serverInfo {:name "kajero" :version "1"}})
-             "tools/list" (respond {:tools tools})
-             "tools/call" (let [args (get params "arguments")]
-                            (try
-                              (respond {:content [{:type "text"
-                                                   :text (json/generate-string
-                                                          (call-tool nb writer session (get params "name")
-                                                                     (if (map? args) args {})))}]
-                                        :isError false})
-                              (catch clojure.lang.ExceptionInfo e
-                                (respond {:content [{:type "text" :text (refusal-text e)}] :isError true}))))
-             (when id (respond {})))
+           (let [catalog (if (contains? opts :skills) (:skills opts) @skills/served)
+                 skills? (boolean (seq (:skills catalog)))]
+             (case method
+               "initialize" (respond (cond-> {:protocolVersion (let [asked (get params "protocolVersion")]
+                                                                 (if (some #{asked} protocol-versions) asked (first protocol-versions)))
+                                              :capabilities (capabilities catalog)
+                                              :serverInfo {:name "kajero" :version "1"}}
+                                       skills? (assoc :instructions (skills/instructions catalog))))
+               "tools/list" (respond {:tools tools})
+               "tools/call" (let [args (get params "arguments")]
+                              (try
+                                (respond {:content [{:type "text"
+                                                     :text (json/generate-string
+                                                            (call-tool nb writer session (get params "name")
+                                                                       (if (map? args) args {})))}]
+                                          :isError false})
+                                (catch clojure.lang.ExceptionInfo e
+                                  (respond {:content [{:type "text" :text (refusal-text e)}] :isError true}))))
+               "resources/list" (respond {:resources (if skills? (skills/resource-list catalog) [])})
+               "resources/templates/list" (respond {:resourceTemplates []})
+               "resources/read" (respond (skills/read-result catalog (get params "uri")))
+               "skills/list" (if skills?
+                               (respond (skills/list-result catalog sign))
+                               (protocol-error id -32601 "method not found: skills/list"))
+               "skills/get" (if skills?
+                              (respond (skills/get-result catalog sign (get params "uri")))
+                              (protocol-error id -32601 "method not found: skills/get"))
+               (when id (respond {}))))
+           (catch clojure.lang.ExceptionInfo e
+             (if-let [code (:code (ex-data e))]
+               (protocol-error id code (ex-message e))
+               (protocol-error id -32603 (str "internal error: " (ex-message e)))))
           ;; The protocol boundary: any failure, an Error included, becomes a
           ;; JSON-RPC error answer instead of ending the session.
            #_{:splint/disable [lint/catch-throwable]}
@@ -260,6 +306,9 @@
         writer {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")}
         ;; A stdio connection is one MCP session from start to end.
         session (k/start-session! nb)]
+    ;; A staged skill the server cannot serve is a broken build: fail the
+    ;; start instead of the first request.
+    @skills/served
     ;; The index answers the current revisions from memory, so the
     ;; checkpoint warm-up and the verdicts run on a second thread.
     (k/verify-in-background! nb)
