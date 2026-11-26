@@ -36,7 +36,8 @@
    :generation 0})
 
 (def ^:private empty-entry
-  {:head nil :authorship {:actors #{} :evidence #{}} :observations [] :observation-hashes #{}})
+  {:head nil :authorship {:actors #{} :evidence []} :evidence-by-seq (sorted-map)
+   :observations [] :observation-hashes #{}})
 
 (defn- signed-copy?
   "Whether `rec` is `held` read again with the signature `held` lacked."
@@ -59,11 +60,13 @@
   [state rec]
   (update-in state [:entries (:entry rec)]
              (fn [e]
-               (let [e (or e empty-entry)]
+               (let [e (or e empty-entry)
+                     by-seq (assoc (:evidence-by-seq e) (:seq rec) (:evidence rec))]
                  (-> e
                      (cond-> (newer-head? (:head e) rec) (assoc :head rec))
                      (update-in [:authorship :actors] conj (:actor rec))
-                     (update-in [:authorship :evidence] into (:evidence rec)))))))
+                     (assoc :evidence-by-seq by-seq)
+                     (assoc-in [:authorship :evidence] (store/ordered-evidence (vals by-seq))))))))
 
 (defn- add-observation
   [state rec]

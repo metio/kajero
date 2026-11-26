@@ -311,19 +311,35 @@
 
 (declare schema-users)
 
+(defn- page-entry
+  "The entry `id` as a page draws it: entry without the tickets, which
+   only the entry's own page and kajero_get show; nil when there is none."
+  [nb reg id]
+  (when-let [rev (current nb id)]
+    (-> (view nb reg id)
+        (dissoc :actors :ticket-ids)
+        (as-> e (if (seq (:corrections e)) e (dissoc e :corrections)))
+        (as-> e (if (seq (:missed e)) e (dissoc e :missed)))
+        (cond-> (nil? (:retired rev)) (dissoc :retired))
+        (cond-> (= "schema" (get-in rev [:labels "kind"]))
+          (assoc :used-by (schema-users nb id))))))
+
 (defn entry
   "The entry with its current revision, standing, links and the tickets its
    records cite, or nil."
   [nb id]
-  (when (current nb id)
-    (-> (view nb (registry nb) id)
-        (dissoc :actors :ticket-ids)
-        (as-> e (if (seq (:corrections e)) e (dissoc e :corrections)))
-        (as-> e (if (seq (:missed e)) e (dissoc e :missed)))
-        (cond-> (nil? (:retired (current nb id))) (dissoc :retired))
-        (cond-> (= "schema" (get-in (current nb id) [:labels "kind"]))
-          (assoc :used-by (schema-users nb id)))
-        (assoc :tickets (tickets nb (concat (revisions-of nb id) (observations-of nb id)))))))
+  (when-let [e (page-entry nb (registry nb) id)]
+    (assoc e :tickets (tickets nb (cons {:evidence (:evidence (store/authorship (:store nb) id))}
+                                        (observations-of nb id))))))
+
+(defn entries
+  "The entries of `ids` as entry reads them, without the tickets their
+   records cite: what a page of several entries draws. Every verdict is
+   judged under one reading of the actors file. Ids without an entry are
+   left out."
+  [nb ids]
+  (let [reg (registry nb)]
+    (into [] (keep #(page-entry nb reg %)) ids)))
 
 (def ^:private row-fields
   "How each key of a search row - see kajero.select/compile - is computed
