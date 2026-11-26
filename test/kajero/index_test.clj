@@ -275,3 +275,12 @@
     (binding [*err* (java.io.StringWriter.)]
       (is (= (record/hash-of rec) (store/append! s :revision rec nil))))
     (is (= "A" (:title (store/head s "a"))))))
+
+(deftest verdicts-are-warmed-on-a-second-thread-while-writes-land
+  (when-let [{:keys [key actors]} (keys/keypair "claude")]
+    (let [nb (k/notebook (assoc (location) :actors actors))]
+      (dotimes [i 10] (write! nb (str "before " i) {:key key}))
+      (let [warm (future (k/verify-current! nb))]
+        (dotimes [i 10] (write! nb (str "during " i) {:key key}))
+        (is (<= 10 (deref warm 30000 -1) 20)))
+      (is (= #{:verified} (set (map :signature (k/search nb ""))))))))
