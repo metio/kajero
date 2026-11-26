@@ -151,8 +151,11 @@ A selector the notebook refuses answers 400 with `{:refused … :message …}`.
 Evidence of the form `tik:<ticket id>` cites a ticket of the tik store named
 by `KAJERO_TIK_ROOT`. A write citing a ticket that store does not hold is
 refused; a notebook bound to no store takes citations unchecked. Entries
-show each cited ticket with its title and the stages it derives at the time
-of reading, and `ticket=<id>` selects every entry whose records cite it.
+show each cited ticket with its title and the stages it derives, read from
+`tik status` at most a minute before, and `ticket=<id>` selects every entry
+whose records cite it. A write checks a citation against a remembered
+answer only when that answer found the ticket, so a ticket minted a moment
+ago is never refused from memory.
 
 ## Storage
 
