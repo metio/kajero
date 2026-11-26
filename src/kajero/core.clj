@@ -54,7 +54,7 @@
      :signing signing :actors actors
      :verifier (verify/verifier actors)
      :usage (usage/recorder (if dir (usage/file-log (usage/beside dir)) (usage/sqlite-log (:conn s))))
-     :tik-status (or tik-status (when tik-root (tik/status-in tik-root)))}))
+     :tik-status (or tik-status (when tik-root (tik/cached (tik/status-in tik-root))))}))
 
 (defn- check-tickets!
   "Refuses evidence citing a ticket the bound tik store does not hold. A
@@ -62,7 +62,7 @@
   [{:keys [tik-status]} evidence]
   (when tik-status
     (doseq [id (tik/ticket-ids evidence)]
-      (when-not (tik-status id)
+      (when-not (tik/for-write tik-status id)
         (throw (ex-info (str "the tik store holds no ticket " id) {:reason :kajero/no-ticket :ticket id}))))))
 
 (defn tickets
@@ -70,7 +70,7 @@
    when the notebook is bound to a tik store."
   [{:keys [tik-status]} records]
   (vec (for [id (distinct (mapcat (comp tik/ticket-ids :evidence) records))]
-         (or (when tik-status (tik-status id)) {:ticket id}))))
+         (or (when tik-status (tik/for-display tik-status id)) {:ticket id}))))
 
 (defn- refuse!
   [reason message data]
