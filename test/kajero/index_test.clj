@@ -211,6 +211,30 @@
       (io/copy (record/sign key rec) (io/file (str f ".sig")))
       (is (= :verified (:signature (k/entry nb "e"))) "the record read again carries its signature, which verifies"))))
 
+(deftest a-reader-never-sees-a-record-or-signature-half-written
+  (when (= :files *backend*)
+    (let [{:keys [dir]} (location)
+          s (store/open {:dir dir})
+          sig (.getBytes (str/join (repeat 300 "s")))
+          n 1500
+          done (promise)
+          seen (atom [])
+          reader (future
+                   (loop [cursor nil]
+                     (let [{:keys [records cursor]} (store/changes s cursor)]
+                       (swap! seen into records)
+                       (when-not (realized? done) (recur cursor)))))]
+      (dotimes [i n]
+        (store/append! s :observation {:entry (str "e" (mod i 7)) :revision "r" :outcome "held" :actor "claude"
+                                       :evidence [(str i)] :at "2026-11-26T10:00:00Z"}
+                       sig))
+      (deliver done true)
+      @reader
+      (let [bad (remove (fn [[_ rec]] (and (:entry rec) (or (nil? (:sig rec)) (= (count sig) (count (:sig rec))))))
+                        @seen)]
+        (is (empty? bad) (str (count bad) " records read half-written")))
+      (is (empty? (filter #(str/ends-with? (str %) ".tmp") (file-seq (io/file dir)))) "no temporary file is left"))))
+
 ;; --------------------------------------------------------- concurrency
 
 (deftest searches-run-while-entries-are-appended
