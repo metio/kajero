@@ -12,18 +12,20 @@
 # not ship. On a host that cannot install it, put a libz.a in a directory
 # and pass NATIVE_IMAGE_OPTS=--native-compiler-options=-L<that directory>;
 # native-image does not hand LIBRARY_PATH on to the linker.
-# sqlite-jdbc's own native-image feature embeds its SQLite library, and
-# native-image installs the exit handlers that run kajero's shutdown hooks
-# on SIGTERM. commonmark is initialised at build time because kajero.web
+# sqlite-jdbc's own native-image feature embeds its SQLite library.
+# commonmark is initialised at build time because kajero.web
 # holds its parser and renderer in vars, which the image heap stores.
 #
 # A native executable takes -X, -XX: and -D arguments for itself wherever
 # they stand, which would let a title or selector starting with them change
 # the runtime (-Dorg.sqlite.lib.path names the SQLite library to load)
 # instead of reaching kajero. The binary therefore parses no runtime
-# options, and its heap is capped at build time, at the -Xmx128m the
-# service runs the JVM with; the uncapped serial heap held 125-186 MB RSS
-# on a copy of the live notebook against 85-95 MB with the cap.
+# options. That also leaves out GraalVM's exit handlers, so a SIGTERM would
+# end it without running a shutdown hook; kajero.main installs its own
+# handlers for serve and mcp, and the smoke test checks that the hooks ran.
+# The heap is capped at build time, at the -Xmx128m the service runs the
+# JVM with; the uncapped serial heap held 125-186 MB RSS on a copy of the
+# live notebook against 85-95 MB with the cap.
 #
 # NATIVE_IMAGE_OPTS adds options, such as -Ob for a quicker build while
 # developing, or --gc=G1.
