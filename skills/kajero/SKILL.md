@@ -57,7 +57,9 @@ Selector terms, all of which must hold, each optionally prefixed `not`:
 `link=<entry id>` (linked to that entry, in either direction),
 `link:<type>=<entry id>` (linked by `supersedes`, `contradicts` or
 `see-also`), `schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
-`unsigned`, `superseded`, `retired`, `missed` (entries a search missed),
+`unsigned` (no signature), `bad-signature` (a signature that does not
+verify against the actors file), `unverified` (either), `superseded`,
+`retired`, `missed` (entries a search missed),
 `coverage` (the records of questions asked), `never-returned` and
 `returned-unopened` (see below), and `~text` (or a bare word) for title,
 body, labels and data. It is tik's `--where` grammar. Retired entries are
@@ -136,7 +138,11 @@ Read the standing before trusting an entry. `disputed` means someone found
 the current revision wrong; `stale` means nobody confirmed it for longer
 than its kind allows; a high `held` count from several actors with recent
 dates is the strongest signal there is. An entry is a lead to verify, not a
-fact to repeat.
+fact to repeat. Its `signature` says whether the current revision's
+signature verifies against the actors file now: `verified`, `unsigned`, or
+`bad-signature`, which means no registered actor vouches for those bytes -
+a foreign key, a body changed after signing, or an actor since removed.
+`signed?` is true only for `verified`.
 
 ## Writing an entry
 

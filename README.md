@@ -49,6 +49,18 @@ when the writer has a key, signed with that actor's tik key. A notebook with
 them and marks them unsigned. Signatures are checked against an OpenSSH
 allowed-signers file (`KAJERO_ACTORS`) before anything is written.
 
+Every read checks them again against the actors file as it is at that
+moment, so a record copied in by `git pull` or by hand is trusted only when
+its signature verifies. A record's `signature` is `verified`, `unsigned` or
+`bad-signature` (a key the actors file does not give to that actor, a body
+changed after signing, an actor removed from the file, or no actors file at
+all), and `signed?` is true only for `verified`. Each verdict is cached per
+record, signature and actors-file digest, so a change to the actors file
+takes effect on the next read. The canonical bytes are printed under fixed
+print settings; a record signed over the `#:ns{...}` rendering of a
+namespaced map, which the command line and the stdio MCP server printed
+before those settings were fixed, still verifies.
+
 ## Structured data
 
 A revision may carry data beside its body: any EDN value, written with
@@ -177,7 +189,10 @@ label:system=calico label:kind not disputed ~apiservices
 | `ticket=<id>` | whose records cite the tik ticket as evidence |
 | `schema-revision=<hash>` | whose data was checked against that schema revision |
 | `outdated-schema` | whose data was checked against an older schema revision |
-| `disputed`, `stale`, `unsigned`, `superseded` | in that derived state |
+| `disputed`, `stale`, `superseded` | in that derived state |
+| `unsigned` | whose current revision carries no signature |
+| `bad-signature` | whose current revision carries a signature that does not verify against the actors file |
+| `unverified` | whose current revision is unsigned or carries a bad signature |
 | `retired` | that somebody retired |
 | `missed` | whose current revision a search missed: they need better titles or labels |
 | `coverage` | labelled `kind=coverage`: the records of questions asked |
