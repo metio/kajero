@@ -27,18 +27,14 @@
    kajero.record/legacy-bytes) verifies too, and its verdict says
    :form :legacy; every other verified record says :form :canonical."
   (:require [clojure.java.io :as io]
-            [clojure.string :as str]
             [kajero.record :as record]
             [tik.sign :as sign]
             [tik.sshsig :as sshsig])
   (:import (java.nio.file Files LinkOption NoSuchFileException Path)
            (java.nio.file.attribute BasicFileAttributes)
-           (java.security MessageDigest)
-           (java.util.concurrent ConcurrentHashMap)))
-
-(defn- sha256
-  [^bytes b]
-  (str "sha256-" (str/join (map #(format "%02x" %) (.digest (MessageDigest/getInstance "SHA-256") b)))))
+           (java.util ArrayList)
+           (java.util.concurrent ConcurrentHashMap)
+           (java.util.function Consumer Function)))
 
 (defn check-signature
   "Whether `sig` is `actor`'s signature over `message` under the actors
@@ -83,7 +79,7 @@
 (defn- load-registry
   [path ^Path p status previous]
   (when-let [b (read-actors p)]
-    (let [digest (sha256 b)]
+    (let [digest (record/sha256 b)]
       (if (= digest (:digest previous))
         (assoc previous :status status)
         {:path path :status status :digest digest :text (String. b "UTF-8")
@@ -103,17 +99,22 @@
         (nil? status) nil
         (and current (= status (:status current))) current
         :else (let [loaded (load-registry path p status current)]
-                (reset! registry loaded)
-                loaded)))))
+                ;; Two first readers may both load the file; the one that
+                ;; stores second keeps the first one's cache when the text
+                ;; is the same, so no verdict is judged twice.
+                (swap! registry (fn [cur]
+                                  (if (and cur loaded (= (:digest cur) (:digest loaded)))
+                                    (assoc cur :status status)
+                                    loaded))))))))
 
 (defn- judge
-  [check reg rec ^bytes sig]
+  [check reg rec ^bytes canonical ^bytes sig]
   (let [actor (:actor rec)]
     (cond
-      (and actor (check reg (record/->bytes rec) sig actor))
+      (and actor (check reg canonical sig actor))
       {:signature :verified :form :canonical}
 
-      (when-let [legacy (and actor (record/legacy-bytes rec))]
+      (when-let [legacy (and actor (record/legacy-bytes rec canonical))]
         (check reg legacy sig actor))
       {:signature :verified :form :legacy}
 
@@ -122,8 +123,10 @@
 (defn verdict
   "{:signature :verified|:unsigned|:bad-signature} for the record, whose
    signature travels as :sig, with :form :canonical or :legacy when it
-   verified. Judged once per record, signature and actors file text.
-   `hash` is the record's hash when the caller has it already."
+   verified. Judged once per record, signature and actors file text, even
+   when several threads ask at once. `hash` is the record's hash when the
+   caller has it already; `reg` is the registry of the request, read once
+   for all the records it judges."
   ([v rec] (verdict v (registry v) rec nil))
   ([v rec hash] (verdict v (registry v) rec hash))
   ([{:keys [check]} reg rec hash]
@@ -133,11 +136,13 @@
        (nil? reg) {:signature :bad-signature}
        :else
        (let [^ConcurrentHashMap cache (:verdicts reg)
-             k [(or hash (record/hash-of rec)) (sha256 sig)]]
+             [canonical h] (if hash [nil hash] (record/bytes+hash rec))
+             k [h (record/sha256 sig)]]
          (or (.get cache k)
-             (let [v (judge check reg rec sig)]
-               (.putIfAbsent cache k v)
-               v)))))))
+             (.computeIfAbsent cache k
+                               (reify Function
+                                 (apply [_ _]
+                                   (judge check reg rec (or canonical (record/->bytes rec)) sig))))))))))
 
 (defn verified?
   "Whether the record's signature verifies now."
@@ -145,9 +150,15 @@
   (= :verified (:signature (verdict v rec))))
 
 (defn warm!
-  "Judges every record of `records`, a sequence that may be read lazily,
-   under one reading of the actors file, so later judgements are cache
-   hits. Returns the number judged."
-  [v records]
-  (let [reg (registry v)]
-    (reduce (fn [n rec] (verdict v reg rec nil) (inc n)) 0 records)))
+  "Judges every record of `records` under one reading of the actors file,
+   on the common fork-join pool, so later judgements are cache hits.
+   `hash-of` gives a record's hash, record/hash-of unless the caller
+   remembers hashes. Returns the number judged."
+  ([v records] (warm! v records nil))
+  ([v records hash-of]
+   (let [reg (registry v)
+         recs (ArrayList. ^java.util.Collection (vec records))]
+     (.forEach (.parallelStream recs)
+               (reify Consumer
+                 (accept [_ rec] (verdict v reg rec (when hash-of (hash-of rec))))))
+     (.size recs))))

@@ -181,21 +181,28 @@
 
 (defn- entry-ids [nb] (store/entries (:store nb)))
 
+(defn- registry
+  "The actors file as one request reads it, for every verdict the request
+   judges - see kajero.verify/registry."
+  [nb]
+  (verify/registry (:verifier nb)))
+
 (defn- signature
-  "Whether the record's signature verifies against the actors file now:
+  "Whether the record's signature verifies against the actors file `reg`:
    {:signature :verified|:unsigned|:bad-signature}, see kajero.verify.
    `hash` is the record's hash when the caller has it already."
-  ([nb rec] (signature nb rec nil))
-  ([nb rec hash] (verify/verdict (:verifier nb) rec hash)))
+  [nb reg rec hash]
+  (verify/verdict (:verifier nb) reg rec hash))
 
 (defn verify-current!
   "Judges the signature of every entry's current revision, which every
-   search reads, so later searches find the verdicts cached. Returns the
-   number judged. The web and MCP servers run it on a background thread at
-   start; a read that comes first judges what it needs itself."
+   search reads, so later searches find the verdicts cached. The records
+   are judged in parallel. Returns the number judged. The web and MCP
+   servers run it on a background thread at start; a read that comes first
+   judges what it needs itself."
   [nb]
   (let [s (:store nb)]
-    (verify/warm! (:verifier nb) (keep #(store/head s %) (store/entries s)))))
+    (verify/warm! (:verifier nb) (keep #(store/head s %) (store/entries s)) derived/hash-of)))
 
 (defn verify-in-background!
   "Runs verify-current! on a daemon thread, so a server answers while the
@@ -249,7 +256,7 @@
        vec))
 
 (defn- view
-  [nb entry]
+  [nb reg entry]
   (let [rev (current nb entry)
         authorship (store/authorship (:store nb) entry)
         rev-hash (derived/hash-of rev)
@@ -257,7 +264,7 @@
         observations (counted all-observations)
         of-current (filter #(= rev-hash (:revision %)) observations)
         links (links-of nb entry)
-        state (:signature (signature nb rev rev-hash))]
+        state (:signature (signature nb reg rev rev-hash))]
     {:entry entry
      :revision rev-hash
      :title (:title rev)
@@ -288,7 +295,7 @@
    records cite, or nil."
   [nb id]
   (when (current nb id)
-    (-> (view nb id)
+    (-> (view nb (registry nb) id)
         (dissoc :actors :ticket-ids)
         (as-> e (if (seq (:corrections e)) e (dissoc e :corrections)))
         (as-> e (if (seq (:missed e)) e (dissoc e :missed)))
@@ -350,7 +357,8 @@
         row-of (if counts (fn [v] (assoc (row v) :usage (usage/of-entry counts (:entry v)))) row)
         terms (select/text-terms selector)
         data-terms (not-empty (select/data-terms selector))
-        views (mapv #(view nb %) (entry-ids nb))
+        reg (registry nb)
+        views (mapv #(view nb reg %) (entry-ids nb))
         citations (when (seq terms) (cite/incoming views))
         ranked (fn [v] (if (seq terms)
                          (let [text (text-of v)
@@ -412,23 +420,24 @@
   "Every revision, observation and link of the entry, oldest first. An
    observation a later one corrected carries :corrected-by."
   [nb id]
-  (->> (concat (for [r (revisions-of nb id)] [:revision r nil])
-               (let [obs (observations-of nb id)
-                     corrector (into {} (keep #(when (:corrects %) [(:corrects %) (record/hash-of %)])) obs)]
-                 (for [o obs
-                       :let [h (record/hash-of o)]]
-                   [:observation o (when (corrector h) {:corrected-by (corrector h)})]))
-               (for [l (links-of nb id)] [:link l nil]))
-       (map (fn [[kind r extra]]
-              (let [h (record/hash-of r)
-                    {state :signature} (signature nb r h)]
-                (-> r
-                    (dissoc :sig)
-                    (assoc :kind kind :hash h
-                           :signed? (= :verified state) :signature state)
-                    (merge extra)))))
-       (sort-by :at)
-       vec))
+  (let [reg (registry nb)]
+    (->> (concat (for [r (revisions-of nb id)] [:revision r nil])
+                 (let [obs (observations-of nb id)
+                       corrector (into {} (keep #(when (:corrects %) [(:corrects %) (record/hash-of %)])) obs)]
+                   (for [o obs
+                         :let [h (record/hash-of o)]]
+                     [:observation o (when (corrector h) {:corrected-by (corrector h)})]))
+                 (for [l (links-of nb id)] [:link l nil]))
+         (map (fn [[kind r extra]]
+                (let [h (record/hash-of r)
+                      {state :signature} (signature nb reg r h)]
+                  (-> r
+                      (dissoc :sig)
+                      (assoc :kind kind :hash h
+                             :signed? (= :verified state) :signature state)
+                      (merge extra)))))
+         (sort-by :at)
+         vec)))
 
 (defn labels
   "Every label of a current revision of an entry that is not retired, as
