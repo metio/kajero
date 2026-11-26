@@ -97,7 +97,7 @@
                                :target {:type "string"}}
                   :required ["source" "type" "target"]}}
    {:name "kajero_checkpoint"
-    :description "Where the notebook's signed checkpoints stand: the root of its records now, the latest checkpoint's root, time and age, how many records it covers unchanged, and the records it held that are missing from the store now, with the entries they belonged to. A missing record means a record of a grow-only notebook was deleted or edited; the selector term missing-records finds the entries concerned. Warnings name a checkpoint that was ignored, for example one whose signature does not verify under the pinned key."
+    :description "Where the notebook's signed checkpoints stand: the root of its records now, the latest checkpoint's root, time and age, how many records it covers unchanged, and the records it held that are missing from the store now, with the entries they belonged to. A missing record means a record of a grow-only notebook was deleted or edited; the selector term missing-records finds the entries concerned. Right after the server starts, warm-up.state is warming and missing is pending: the checkpoint has not been compared with the records yet, and a missing-records search is refused until it has. Warnings name a checkpoint that was ignored, for example one whose signature does not verify under the pinned key."
     :inputSchema {:type "object" :properties {}}}
    {:name "kajero_migrate"
     :description "Run a migration entry (labelled kind=migration, data {:from schema :to schema :steps [...]}): every entry using the :from schema gets a new revision with converted data on the :to schema. Nothing is written when any entry fails to convert or to fit the :to schema; an entry somebody revises meanwhile is reported as stale and keeps its schema. Use dry_run first to see the result."
@@ -253,12 +253,15 @@
                               :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
                               :actors (env "KAJERO_ACTORS")
                               :tik-root (env "KAJERO_TIK_ROOT")
-                              :checkpoint (checkpoint/settings env store)))
+                              :checkpoint (checkpoint/settings env store)
+                              ;; the checkpoint is read and the tree built
+                              ;; by verify-in-background!, while we answer
+                              :warm-up :background))
         writer {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")}
         ;; A stdio connection is one MCP session from start to end.
         session (k/start-session! nb)]
-    ;; The index answers the current revisions from memory, so the verdicts
-    ;; are judged on a second thread for either store.
+    ;; The index answers the current revisions from memory, so the
+    ;; checkpoint warm-up and the verdicts run on a second thread.
     (k/verify-in-background! nb)
     (k/keep-flushing! nb)
     (k/keep-checkpointing! nb)

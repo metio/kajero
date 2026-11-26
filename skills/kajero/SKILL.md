@@ -152,7 +152,11 @@ root, age and how many records it covers - and the records it held that are
 missing now, with the entries they belonged to; `missing-records` selects
 those entries. A missing record means a record was deleted or edited in
 place after it was signed: tell the user, and treat what those entries say
-with the same suspicion as a `bad-signature`.
+with the same suspicion as a `bad-signature`. Right after the server
+starts, `kajero_checkpoint` may report its warm-up as `warming` and
+`missing` as `pending`, and a `missing-records` search is refused with
+`warming-up`: nothing is known about missing records yet, so ask again in a
+few seconds instead of reading the refusal as "none".
 
 ## Writing an entry
 
