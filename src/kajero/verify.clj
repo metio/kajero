@@ -149,6 +149,21 @@
   [v rec]
   (= :verified (:signature (verdict v rec))))
 
+(defn judge-all
+  "[hash verdict] of every record of `records`, in their order, judged
+   under the registry `reg` on the common fork-join pool. `hash-of` gives
+   a record's hash, record/hash-of unless the caller remembers hashes."
+  [v reg records hash-of]
+  (let [recs (vec records)
+        out (object-array (count recs))]
+    (.forEach (.parallel (java.util.stream.IntStream/range 0 (count recs)))
+              (reify java.util.function.IntConsumer
+                (accept [_ i]
+                  (let [rec (nth recs i)
+                        h ((or hash-of record/hash-of) rec)]
+                    (aset out i [h (verdict v reg rec h)])))))
+    (vec out)))
+
 (defn warm!
   "Judges every record of `records` under one reading of the actors file,
    on the common fork-join pool, so later judgements are cache hits.
@@ -162,3 +177,40 @@
                (reify Consumer
                  (accept [_ rec] (verdict v reg rec (when hash-of (hash-of rec))))))
      (.size recs))))
+
+(defn verdict->str
+  "A verdict as one word: verified:canonical, verified:legacy, unsigned
+   or bad-signature."
+  [{:keys [signature form]}]
+  (if (= :verified signature)
+    (str "verified:" (name form))
+    (name signature)))
+
+(defn str->verdict
+  "The verdict verdict->str wrote as `s`, or nil for any other word."
+  [s]
+  (case s
+    "verified:canonical" {:signature :verified :form :canonical}
+    "verified:legacy" {:signature :verified :form :legacy}
+    "unsigned" {:signature :unsigned}
+    "bad-signature" {:signature :bad-signature}
+    nil))
+
+(defn seed!
+  "Remembers verdicts judged earlier under the actors file whose digest is
+   `actors`, from `leaves` of {:hash :sig :verdict} with :sig the sha256 of
+   the signature, so judging those records again is a cache hit. Nothing
+   is remembered unless `reg` is the registry of that same actors file, and
+   a verdict already judged in this process is kept. Leaves without a
+   signature need no judgement and are skipped. Returns the number taken."
+  [reg actors leaves]
+  (if-not (and reg actors (= actors (:digest reg)))
+    0
+    (let [^ConcurrentHashMap cache (:verdicts reg)]
+      (reduce (fn [n {:keys [hash sig verdict]}]
+                (let [v (str->verdict verdict)]
+                  (if (and sig v (not= :unsigned (:signature v)))
+                    (do (.putIfAbsent cache [hash sig] v) (inc n))
+                    n)))
+              0
+              leaves))))
