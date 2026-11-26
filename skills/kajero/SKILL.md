@@ -60,8 +60,9 @@ Selector terms, all of which must hold, each optionally prefixed `not`:
 `see-also`), `schema-revision=<hash>`, `outdated-schema`, `disputed`, `stale`,
 `unsigned` (no signature), `bad-signature` (a signature that does not
 verify against the actors file), `unverified` (either), `superseded`,
-`retired`, `missed` (entries a search missed),
-`coverage` (the records of questions asked), `never-returned` and
+`retired`, `missed` (entries a search missed), `missing-records` (a record
+of the entry that the latest signed checkpoint held is gone from the
+store), `coverage` (the records of questions asked), `never-returned` and
 `returned-unopened` (see below), and `~text` (or a bare word) for title,
 body, labels and data. It is tik's `--where` grammar. Retired entries are
 left out unless the selector names `retired`.
@@ -144,6 +145,14 @@ signature verifies against the actors file now: `verified`, `unsigned`, or
 `bad-signature`, which means no registered actor vouches for those bytes -
 a foreign key, a body changed after signing, or an actor since removed.
 `signed?` is true only for `verified`.
+
+A notebook only grows, so a record that disappears is news. When the
+server signs checkpoints, `kajero_checkpoint` reports the latest one - its
+root, age and how many records it covers - and the records it held that are
+missing now, with the entries they belonged to; `missing-records` selects
+those entries. A missing record means a record was deleted or edited in
+place after it was signed: tell the user, and treat what those entries say
+with the same suspicion as a `bad-signature`.
 
 ## Writing an entry
 
