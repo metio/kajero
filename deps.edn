@@ -4,13 +4,23 @@
  :deps {org.clojure/clojure {:mvn/version "1.12.6"}
         ;; tik.sign signs and verifies revisions with the actors' tik keys
         io.github.metio/tik {:git/sha "8447157bce1a8d3a6f3222dbff796b887427633b"}
+        ;; kajero.mcp and kajero.web read and write JSON with it; declared
+        ;; at the version tik brings, so the resolution stays the same
+        cheshire/cheshire {:mvn/version "6.2.0"}
         org.xerial/sqlite-jdbc {:mvn/version "3.54.1.0"}
         metosin/malli {:mvn/version "0.20.3"}
         hiccup/hiccup {:mvn/version "2.0.0-RC1"}
         org.commonmark/commonmark {:mvn/version "0.24.0"}
         org.commonmark/commonmark-ext-gfm-tables {:mvn/version "0.24.0"}}
  :aliases
- {:test {:extra-paths ["test"]
+ {;; graal-build-time initialises the Clojure namespaces at image build
+  ;; time, which native-image needs for AOT-compiled Clojure
+  :native {:extra-deps {com.github.clj-easy/graal-build-time {:mvn/version "1.0.6"}}}
+  ;; the AOT uberjar of kajero.main: clojure -T:build uber (build.clj)
+  :build {:extra-paths ["."]
+          :deps {io.github.clojure/tools.build {:mvn/version "0.10.6"}}
+          :ns-default build}
+  :test {:extra-paths ["test"]
          :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
          :extra-deps {lambdaisland/kaocha {:mvn/version "1.91.1392"}}
          :main-opts ["-m" "kaocha.runner"]}
