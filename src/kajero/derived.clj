@@ -7,8 +7,15 @@
    A record's hash is cached by the record itself, and what a search reads
    from a revision by the revision's hash. A hash names exactly one content,
    so a cached value can never belong to another record, and the caches are
-   shared by every notebook of the process."
-  (:require [kajero.lru :as lru]
+   shared by every notebook of the process.
+
+   Revisions are written rarely and read by every search, so a revision
+   written through a notebook has its values computed when it is written
+   (see `warm-revision!`); a revision another process wrote has them
+   computed by the first read that needs them."
+  (:require [clojure.string :as str]
+            [kajero.lru :as lru]
+            [kajero.paths :as paths]
             [kajero.record :as record]))
 
 (def hash-bound
@@ -37,3 +44,37 @@
   (let [c (or (get @by-revision k)
               (get (swap! by-revision #(if (contains? % k) % (assoc % k (lru/cache revision-bound)))) k))]
     (lru/through c revision f)))
+
+(defn cited-paths
+  "The repository paths the revision `rev`, whose hash is `revision`, names
+   in its title, body and evidence - see kajero.paths."
+  [revision {:keys [title body evidence]}]
+  (of-revision :paths revision #(into (paths/cited title) (mapcat paths/cited) (cons body evidence))))
+
+(defn haystack
+  "The lower-case text a ~text selector term looks in: title, body, data
+   and labels of the revision `rev`, whose hash is `revision`."
+  [revision {:keys [title body data labels]}]
+  (of-revision :haystack revision
+               #(str/lower-case (str/join " " (concat [title body (some-> data pr-str)]
+                                                      (map (fn [l] (str/join "=" l)) labels))))))
+
+(defn search-text
+  "The searched text of the revision `rev`, whose hash is `revision`, by
+   field, as kajero.rank reads it."
+  [revision {:keys [title body data labels]}]
+  (of-revision :text revision
+               #(hash-map :title (or title "")
+                          :labels (str/join " " (map (fn [l] (str/join "=" l)) (sort labels)))
+                          :body (or body "")
+                          :data (if (some? data) (pr-str data) ""))))
+
+(defn warm-revision!
+  "Computes and remembers every value derived from the revision `rev`.
+   Returns its hash."
+  [rev]
+  (let [h (hash-of rev)]
+    (cited-paths h rev)
+    (haystack h rev)
+    (search-text h rev)
+    h))

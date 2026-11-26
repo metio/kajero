@@ -16,7 +16,6 @@
             [kajero.derived :as derived]
             [kajero.index :as index]
             [kajero.migrate :as migrate]
-            [kajero.paths :as paths]
             [kajero.rank :as rank]
             [kajero.record :as record]
             [kajero.select :as select]
@@ -35,6 +34,16 @@
 
 (def link-types select/link-types)
 
+(defn- warm-on-append
+  "What a notebook computes for a record it has just written: every value
+   a search derives from a revision, and the revision's signature verdict,
+   so the first search after a write finds them remembered."
+  [verifier]
+  (fn [kind rec]
+    (if (= :revision kind)
+      (verify/verdict verifier rec (derived/warm-revision! rec))
+      (derived/hash-of rec))))
+
 (defn notebook
   "{:path \"notes.db\"} for SQLite or {:dir \"notes/\"} for flat files, with
    :signing :optional|:required, :actors \"allowed_signers\", and :tik-root, the
@@ -50,10 +59,11 @@
    <dir>.usage.edn next to a flat-file notebook. The counts are held in
    memory until flush! or close! writes them."
   [{:keys [signing actors tik-root tik-status dir refresh-ms index?] :or {signing :optional index? true} :as opts}]
-  (let [s (store/open opts)]
-    {:store (if index? (index/indexed s {:refresh-ms refresh-ms}) s)
+  (let [s (store/open opts)
+        verifier (verify/verifier actors)]
+    {:store (if index? (index/indexed s {:refresh-ms refresh-ms :on-append (warm-on-append verifier)}) s)
      :signing signing :actors actors
-     :verifier (verify/verifier actors)
+     :verifier verifier
      :usage (usage/recorder (if dir (usage/file-log (usage/beside dir)) (usage/sqlite-log (:conn s))))
      :tik-status (or tik-status (when tik-root (tik/cached (tik/status-in tik-root))))}))
 
@@ -288,7 +298,7 @@
         (assoc :tickets (tickets nb (concat (revisions-of nb id) (observations-of nb id)))))))
 
 (defn- row
-  [{:keys [entry title body labels links standing signed? superseded? retired actors ticket-ids outdated-schema? missed] :as v}]
+  [{:keys [entry labels links standing signed? superseded? retired actors ticket-ids outdated-schema? missed] :as v}]
   {:labels labels
    :links (into #{} (map (fn [{:keys [source type target]}]
                            [type (if (= entry source) target source)]))
@@ -298,11 +308,8 @@
    :outdated-schema? outdated-schema?
    :actors actors
    :tickets ticket-ids
-   :paths (derived/of-revision :paths (:revision v)
-                               #(into (paths/cited title) (mapcat paths/cited) (cons body (:evidence v))))
-   :haystack (derived/of-revision :haystack (:revision v)
-                                  #(str/lower-case (str/join " " (concat [title body (some-> (:data v) pr-str)]
-                                                                         (map (fn [l] (str/join "=" l)) labels)))))
+   :paths (derived/cited-paths (:revision v) v)
+   :haystack (derived/haystack (:revision v) v)
    :disputed? (:disputed? standing)
    :stale? (:stale? standing)
    :missed? (boolean (seq missed))
@@ -321,11 +328,7 @@
 (defn- text-of
   "The searched text of a view, by field, as kajero.rank reads it."
   [v]
-  (derived/of-revision :text (:revision v)
-                       #(hash-map :title (or (:title v) "")
-                                  :labels (str/join " " (map (fn [l] (str/join "=" l)) (sort (:labels v))))
-                                  :body (or (:body v) "")
-                                  :data (if (some? (:data v)) (pr-str (:data v)) ""))))
+  (derived/search-text (:revision v) v))
 
 (defn search
   "Summaries of the entries the selector picks. With text terms, each

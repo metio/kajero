@@ -7,11 +7,13 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
             [kajero.index :as index]
+            [kajero.paths :as paths]
             [kajero.print :as print]
             [kajero.record :as record]
             [kajero.store :as store]
             [kajero.test-keys :as keys]
-            [kajero.test-temp :as temp])
+            [kajero.test-temp :as temp]
+            [kajero.verify :as verify])
   (:import (java.util.concurrent CountDownLatch)))
 
 (def ^:private ^:dynamic *backend* :sqlite)
@@ -247,3 +249,29 @@
       (is (= 7 (:kajero/stale-base outcomes)) (pr-str outcomes)))
     (is (= 2 (count (store/revisions (:store nb) entry))))))
 
+;; ------------------------------------------------- values at write time
+
+(deftest a-write-computes-what-searches-derive-from-it
+  (when-let [{:keys [key actors]} (keys/keypair "claude")]
+    (let [nb (k/notebook (assoc (location) :actors actors))
+          cited (atom 0)
+          checked (atom 0)
+          real-cited paths/cited
+          real-check verify/check-signature]
+      (with-redefs [paths/cited (fn [t] (swap! cited inc) (real-cited t))
+                    verify/check-signature (fn [& args] (swap! checked inc) (apply real-check args))]
+        (let [file (str "x-" (random-uuid) ".yaml")
+              {:keys [entry]} (write! nb (str "Notes on templates/" file) {:key key})]
+          (reset! cited 0)
+          (reset! checked 0)
+          (is (= [entry] (map :entry (k/search nb (str "path=" file)))))
+          (is (= :verified (:signature (k/entry nb entry))))
+          (is (zero? @cited) "the cited paths were computed when the revision was written")
+          (is (zero? @checked) "the signature verdict was judged when the revision was written"))))))
+
+(deftest a-failure-after-a-write-landed-does-not-fail-the-write
+  (let [s (index/indexed (store/open (location)) {:on-append (fn [_ _] (throw (ex-info "boom" {})))})
+        rec {:entry "a" :seq 1 :title "A" :actor "claude" :evidence [] :at "2026-11-26T10:00:00Z"}]
+    (binding [*err* (java.io.StringWriter.)]
+      (is (= (record/hash-of rec) (store/append! s :revision rec nil))))
+    (is (= "A" (:title (store/head s "a"))))))

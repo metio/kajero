@@ -135,7 +135,7 @@
   (fresh! idx)
   @(:state idx))
 
-(defrecord Indexed [inner state lock refresh-ms]
+(defrecord Indexed [inner state lock refresh-ms on-append]
   store/Store
   (revisions [_ entry] (store/revisions inner entry))
   (observations [this entry] (get-in (held this) [:entries entry :observations] []))
@@ -148,7 +148,15 @@
                    (when (= :kajero/stale-base (:reason (ex-data e)))
                      (refresh! this))
                    (throw e)))]
-      (swap! state add-record [kind (assoc rec :sig sig)])
+      (let [held (assoc rec :sig sig)]
+        (swap! state add-record [kind held])
+        (when on-append
+          ;; the record has landed, so a failure here must not report the
+          ;; write as failed; what it would have computed is computed on read
+          (try (on-append kind held)
+               (catch Exception e
+                 (binding [*out* *err*]
+                   (println "kajero: values of a written record not computed -" (ex-message e)))))))
       h))
   store/Summary
   (head [this entry]
@@ -164,9 +172,11 @@
 
 (defn indexed
   "The store `inner` behind an index, loaded with every record it holds.
-   :refresh-ms is how old the index may get before a read refreshes it."
-  [inner & [{:keys [refresh-ms]}]]
-  (doto (->Indexed inner (atom empty-state) (ReentrantLock.) (long (or refresh-ms default-refresh-ms)))
+   :refresh-ms is how old the index may get before a read refreshes it;
+   :on-append, a function of a kind and a record, runs after each write
+   through the index landed, with the record as the index holds it."
+  [inner & [{:keys [refresh-ms on-append]}]]
+  (doto (->Indexed inner (atom empty-state) (ReentrantLock.) (long (or refresh-ms default-refresh-ms)) on-append)
     refresh!))
 
 (defn inner
