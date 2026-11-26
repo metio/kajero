@@ -15,7 +15,8 @@
             [kajero.print :as kp]
             [kajero.record :as record])
   (:import (java.io File)
-           (java.nio.file FileAlreadyExistsException Files OpenOption StandardOpenOption)
+           (java.nio.file AtomicMoveNotSupportedException CopyOption FileAlreadyExistsException Files OpenOption
+                          StandardCopyOption StandardOpenOption)
            (java.sql Connection DriverManager PreparedStatement ResultSet)))
 
 (defprotocol Store
@@ -199,15 +200,49 @@
 ;;   <dir>/links/<hash>.edn
 ;;   <dir>/pages/<hash>.edn
 ;;
-;; A signature is the file beside its record with .sig appended. Files are
-;; created with CREATE_NEW, so a revision whose :seq file exists is refused
-;; by the filesystem itself, whichever process wrote it first.
+;; A signature is the file beside its record with .sig appended. A record
+;; file is created only if it does not exist yet, so a revision whose :seq
+;; file exists is refused by the filesystem itself, whichever process wrote
+;; it first.
+;;
+;; Both files appear whole: each is written to a temporary file in the same
+;; directory first, whose name no reader lists, and then linked (a record)
+;; or moved (a signature) into place. A reader that lists the directory
+;; while a write runs would otherwise read an empty or partial file, and an
+;; empty signature reads as a signature that does not verify rather than as
+;; one still to come, so the record would never be read again.
+
+(defn- temp-beside
+  ^File [^File f ^bytes bytes]
+  (io/make-parents f)
+  ;; created like the record itself, so it takes the same permissions
+  (let [tmp (io/file (.getParentFile f) (str ".kajero-" (java.util.UUID/randomUUID) ".tmp"))]
+    (Files/write (.toPath tmp) bytes ^"[Ljava.nio.file.OpenOption;"
+                 (into-array OpenOption [StandardOpenOption/CREATE_NEW StandardOpenOption/WRITE]))
+    tmp))
 
 (defn- create-new!
+  "Creates `f` holding `bytes`, whole, or throws FileAlreadyExistsException
+   when it exists. Where the filesystem has no hard links, the file is
+   written in place with CREATE_NEW."
   [^File f ^bytes bytes]
-  (io/make-parents f)
-  (Files/write (.toPath f) bytes ^"[Ljava.nio.file.OpenOption;"
-               (into-array OpenOption [StandardOpenOption/CREATE_NEW StandardOpenOption/WRITE])))
+  (let [tmp (temp-beside f bytes)]
+    (try
+      (Files/createLink (.toPath f) (.toPath tmp))
+      (catch UnsupportedOperationException _
+        (Files/write (.toPath f) bytes ^"[Ljava.nio.file.OpenOption;"
+                     (into-array OpenOption [StandardOpenOption/CREATE_NEW StandardOpenOption/WRITE])))
+      (finally (.delete tmp)))))
+
+(defn- put-whole!
+  "Writes `bytes` to `f`, replacing it in one rename."
+  [^File f ^bytes bytes]
+  (let [tmp (temp-beside f bytes)]
+    (try
+      (try (Files/move (.toPath tmp) (.toPath f) (into-array CopyOption [StandardCopyOption/ATOMIC_MOVE]))
+           (catch AtomicMoveNotSupportedException _
+             (Files/move (.toPath tmp) (.toPath f) (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))))
+      (finally (.delete tmp)))))
 
 (defn- read-file
   [^File f]
@@ -310,7 +345,8 @@
         (create-new! f (.getBytes ^String (kp/edn-str rec) "UTF-8"))
         (catch FileAlreadyExistsException e
           (if (= :revision kind) (seq-taken! rec) (throw e))))
-      (when sig (create-new! (io/file (str f ".sig")) sig))
+      ;; the record file is ours alone, so nobody else writes its signature
+      (when sig (put-whole! (io/file (str f ".sig")) sig))
       hash))
   Feed
   (changes [_ cursor]
