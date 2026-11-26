@@ -763,9 +763,9 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                :writer {:actor (env "KAJERO_MCP_ACTOR") :key (env "KAJERO_MCP_KEY")}})]
     (k/keep-flushing! nb)
     (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port mcp (contains? offered "http"))
-    ;; Flat files can be read from a second thread; a SQLite notebook
-    ;; shares one connection, so its reads judge their verdicts themselves.
-    (when (env "KAJERO_DIR") (k/verify-in-background! nb))
+    ;; The index answers the current revisions from memory, so the verdicts
+    ;; are judged on a second thread for either store.
+    (k/verify-in-background! nb)
     (println (str "kajero on http://127.0.0.1:" port ":"
                   (when (offered "http") " pages")
                   (when (= 2 (count offered)) " and")

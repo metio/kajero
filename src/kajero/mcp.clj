@@ -251,9 +251,9 @@
         writer {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")}
         ;; A stdio connection is one MCP session from start to end.
         session (k/start-session! nb)]
-    ;; Flat files can be read from a second thread; a SQLite notebook
-    ;; shares one connection, so its reads judge their verdicts themselves.
-    (when (env "KAJERO_DIR") (k/verify-in-background! nb))
+    ;; The index answers the current revisions from memory, so the verdicts
+    ;; are judged on a second thread for either store.
+    (k/verify-in-background! nb)
     (k/keep-flushing! nb)
     (loop []
       (when-let [line (read-line)]
