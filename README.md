@@ -383,6 +383,51 @@ claude mcp add kajero -e KAJERO_DB=$HOME/notes.db -e KAJERO_ACTOR=claude -- sh -
 and revise entries, and when an observation is evidence. Link it into
 `~/.claude/skills/kajero`.
 
+## Binary and uberjar
+
+Each release on GitHub carries a native binary for Linux on amd64 with
+glibc (`kajero-linux-amd64-glibc`), an uberjar for any platform with a JDK
+25 (`kajero.jar`), and a `SHA256SUMS` file signed with cosign keyless
+(`SHA256SUMS.bundle`). Check a download before running it:
+
+```sh
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.bundle \
+  --certificate-identity-regexp '^https://github.com/metio/kajero/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+The first argument picks what runs, and every surface reads the same
+environment as `clojure -M:web`, `-M:mcp` and `-M:run`:
+
+```sh
+kajero serve                  # the pages, and MCP on /mcp with KAJERO_MCP_TOKEN_FILE
+kajero mcp                    # the MCP server over stdio
+kajero search 'label:kind=gotcha'   # any command of the command line
+java --enable-native-access=ALL-UNNAMED -jar kajero.jar serve
+```
+
+The binary needs no JVM. Signing a write and checking a `tik:` citation
+still run `ssh-keygen` and `tik` from `PATH`, as on the JVM. It takes the
+JVM's heap options, such as `kajero serve -Xmx64m`, after the subcommand
+or before it.
+
+To build both locally, with the toolchain from breto and a static zlib
+(`zlib1g-dev` on Debian and Ubuntu, `zlib-ng-compat-static` on Fedora):
+
+```sh
+eval "$(breto env)"
+bb uber            # target/kajero.jar
+bb build-native    # target/kajero.jar and target/kajero
+bb smoke           # serve, MCP, the command line and signatures, against a throwaway notebook
+bb smoke java --enable-native-access=ALL-UNNAMED -jar target/kajero.jar
+```
+
+`dev/build-native.sh` reads extra native-image options from
+`NATIVE_IMAGE_OPTS`, for example `-Ob` for a quicker build while developing,
+or `--native-compiler-options=-L<dir>` for a `libz.a` outside the linker's
+search path.
+
 ## Development
 
 The toolchain comes from breto: `eval "$(breto env)"`, then `bb test` and

@@ -28,7 +28,8 @@ reads `KAJERO_DIR` or `KAJERO_DB` (the notebook), `KAJERO_ACTOR` (who you
 are) and `KAJERO_KEY` (your signing key):
 
 ```sh
-bb kajero search 'label:system=calico not disputed'
+kajero search 'label:system=calico not disputed'      # the released binary
+bb kajero search 'label:system=calico not disputed'   # from a checkout
 ```
 
 Never write as another actor.
