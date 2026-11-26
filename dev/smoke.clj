@@ -18,7 +18,11 @@
    - a SQLite notebook takes a signed write from the command line, checks
      its tik: citation with `tik status` (a stub on PATH) and refuses one
      tik does not know;
-   - a revision changed on disk after it was signed reads as bad-signature.
+   - a revision changed on disk after it was signed reads as bad-signature;
+   - serve signs a checkpoint with a key of its own and reports it over
+     MCP, a SIGTERM ends it with 143 after its shutdown hooks signed a last
+     checkpoint, and the command line reports the changed revision's signed
+     bytes as a missing record.
 
    It exits 0 when every check held and 1 naming the first that failed."
   (:require [babashka.fs :as fs]
@@ -83,6 +87,7 @@
         notes (str (fs/path tmp "notes"))
         human (keypair! tmp "human")
         agent (keypair! tmp "agent")
+        verifier (keypair! tmp "checkpoint")
         actors (str (fs/path tmp "allowed_signers"))
         token-file (str (fs/path tmp "mcp-token"))
         token (apply str (repeatedly 48 #(rand-nth "0123456789abcdef")))
@@ -97,7 +102,8 @@
     (try
       ;; serve, with the pages and MCP on /mcp
       (let [server (run {:env (assoc env "KAJERO_PORT" (str port) "KAJERO_MCP_TOKEN_FILE" token-file
-                                     "KAJERO_MCP_ACTOR" (:actor agent) "KAJERO_MCP_KEY" (:key agent))
+                                     "KAJERO_MCP_ACTOR" (:actor agent) "KAJERO_MCP_KEY" (:key agent)
+                                     "KAJERO_CHECKPOINT_KEY" (:key verifier))
                          :out :inherit :err :inherit}
                         "serve")
             entry (try
@@ -122,10 +128,19 @@
                               "MCP kajero_get reads it as verified, written by" (:actor got))
                       (check! (= [{:host "w-1" :cpus 8}] (edn/read-string (:data_edn got))) "the data came back as written")
                       (check! (= 200 (:status (http/get (str base "/e/" id) {:throw false}))) "the entry page renders")
+                      (let [status (tool url token session 6 "kajero_checkpoint" {})]
+                        (check! (and (:enabled? status) (:signing? status)) "MCP kajero_checkpoint reports checkpoints signed"
+                                (pr-str status)))
                       id)
                     (finally
                       (p/destroy server)
                       (check! (= 143 (:exit @server)) "serve stopped on SIGTERM with 143")))]
+        (let [{:keys [exit out err]} @(run {:env (assoc env "KAJERO_CHECKPOINT_PUBKEY" (:public verifier))
+                                            :out :string :err :string}
+                                           "checkpoint")
+              latest (when (zero? exit) (:latest (edn/read-string out)))]
+          (check! (= 1 (:leaves latest)) "serve ran its shutdown hooks on SIGTERM: its last checkpoint holds the entry"
+                  (pr-str latest) err))
         ;; the stdio MCP server
         (let [mcp (run {:in (str (json/generate-string {:jsonrpc "2.0" :id 1 :method "initialize"
                                                         :params {:protocolVersion "2025-06-18"}})
@@ -184,7 +199,13 @@
           (let [{:keys [exit out err]} @(run {:out :string :err :string} "get" entry)
                 got (when (zero? exit) (edn/read-string out))]
             (check! (= "Tampered entry" (:title got)) "the CLI reads the changed revision" err)
-            (check! (= :bad-signature (keyword (name (:signature got)))) "it reads as bad-signature"))))
+            (check! (= :bad-signature (keyword (name (:signature got)))) "it reads as bad-signature"))
+          (let [pinned (assoc env "KAJERO_CHECKPOINT_PUBKEY" (:public verifier))
+                {:keys [exit out err]} @(run {:env pinned :out :string :err :string} "checkpoint")
+                status (when (zero? exit) (edn/read-string out))
+                found @(run {:env pinned :out :string :err :string} "search" "missing-records")]
+            (check! (and (:latest status) (= 1 (:missing status))) "the CLI reports the signed revision as missing" err)
+            (check! (= [entry] (map :entry (edn/read-string (:out found)))) "missing-records finds its entry" (:err found)))))
       (println "smoke: every check held")
       (finally (fs/delete-tree tmp)))))
 
