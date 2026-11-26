@@ -20,8 +20,15 @@
    the last one is older than the refresh interval and no other thread is
    refreshing; meanwhile, reads answer from the records already held. A
    refused stale write refreshes before it is reported, so the current
-   revision it names is the store's."
+   revision it names is the store's.
+
+   Given a function that turns records into Merkle leaves, the index also
+   keeps a kajero.merkle tree over every record it has read, earlier
+   revisions included, and adds each new record's leaf in the same swap
+   that adds the record and raises the generation. The leaves are computed
+   before the swap, so a swap that retries never judges a signature twice."
   (:require [kajero.derived :as derived]
+            [kajero.merkle :as merkle]
             [kajero.store :as store])
   (:import (java.util.concurrent.locks ReentrantLock)))
 
@@ -108,11 +115,33 @@
     :link (add-link state rec)
     :page (add-page state rec)))
 
+(defn- add-leaves
+  "`state` with the leaves `computed` - {:actors digest :leaves [...]}, see
+   `indexed` - in its tree, remembering the actors file they were judged
+   under."
+  [state computed]
+  (cond-> state
+    computed (update :tree (fn [{:keys [merkle actors] :as t}]
+                             (assoc t
+                                    :merkle (if (nil? merkle)
+                                              (merkle/build (:leaves computed))
+                                              (merkle/add-all merkle (:leaves computed)))
+                                    :actors (conj (or actors #{}) (:actors computed)))))))
+
+(defn- leaves-of
+  "The leaves of `records`, [[kind record] ...], computed by the index's
+   leaf function, or nil when it keeps no tree or there are none."
+  [{:keys [leaves]} records]
+  (when (and leaves (seq records))
+    (leaves records)))
+
 (defn- refresh-held!
   "Reads the store's changes into the index; the caller holds the lock."
-  [{:keys [inner state]}]
-  (let [{:keys [cursor records]} (store/changes inner (:cursor @state))]
+  [{:keys [inner state] :as idx}]
+  (let [{:keys [cursor records]} (store/changes inner (:cursor @state))
+        computed (leaves-of idx records)]
     (swap! state (fn [s] (-> (reduce add-record s records)
+                             (add-leaves computed)
                              (cond-> (seq records) (update :generation inc))
                              (assoc :cursor cursor :refreshed (System/nanoTime)))))
     nil))
@@ -140,7 +169,7 @@
   (fresh! idx)
   @(:state idx))
 
-(defrecord Indexed [inner state lock refresh-ms on-append]
+(defrecord Indexed [inner state lock refresh-ms on-append leaves]
   store/Store
   (revisions [_ entry] (store/revisions inner entry))
   (observations [this entry] (get-in (held this) [:entries entry :observations] []))
@@ -153,8 +182,17 @@
                    (when (= :kajero/stale-base (:reason (ex-data e)))
                      (refresh! this))
                    (throw e)))]
-      (let [held (assoc rec :sig sig)]
-        (swap! state #(-> % (add-record [kind held]) (update :generation inc)))
+      (let [held (assoc rec :sig sig)
+            computed (try (leaves-of this [[kind held]])
+                          (catch Exception e
+                            (binding [*out* *err*]
+                              (println "kajero: the Merkle leaf of a written record not computed -" (ex-message e)))
+                            ::failed))]
+        (swap! state #(-> %
+                          (add-record [kind held])
+                          (cond-> (= ::failed computed) (assoc-in [:tree :stale?] true)
+                                  (not= ::failed computed) (add-leaves computed))
+                          (update :generation inc)))
         (when on-append
           ;; the record has landed, so a failure here must not report the
           ;; write as failed; what it would have computed is computed on read
@@ -181,10 +219,42 @@
   "The store `inner` behind an index, loaded with every record it holds.
    :refresh-ms is how old the index may get before a read refreshes it;
    :on-append, a function of a kind and a record, runs after each write
-   through the index landed, with the record as the index holds it."
-  [inner & [{:keys [refresh-ms on-append]}]]
-  (doto (->Indexed inner (atom empty-state) (ReentrantLock.) (long (or refresh-ms default-refresh-ms)) on-append)
+   through the index landed, with the record as the index holds it.
+
+   :leaves, a function of records [[kind record] ...] returning {:actors
+   digest :leaves [leaf ...]} - one kajero.merkle leaf per record, judged
+   under the actors file of that digest - makes the index keep a Merkle
+   tree over every record; without it the index keeps none."
+  [inner & [{:keys [refresh-ms on-append leaves]}]]
+  (doto (->Indexed inner
+                   (atom (cond-> empty-state leaves (assoc :tree {:merkle merkle/empty-tree :actors #{}})))
+                   (ReentrantLock.) (long (or refresh-ms default-refresh-ms)) on-append leaves)
     refresh!))
+
+(defn tree
+  "{:merkle tree :actors #{digest} :stale? bool} of the index: the Merkle
+   tree over every record it read, the digests of the actors files its
+   verdicts were judged under, and whether a leaf failed to be computed;
+   nil when the index keeps no tree or `s` is no index."
+  [s]
+  (when (instance? Indexed s)
+    (:tree (held s))))
+
+(defn rebuild-tree!
+  "Reads every record of the store again and replaces the tree with one
+   whose leaves are all judged now, under the actors file as it is now.
+   For an actors file that changed, which changes verdicts. Returns the
+   tree as `tree` answers it."
+  [{:keys [inner state ^ReentrantLock lock] :as idx}]
+  (when (:leaves idx)
+    (.lock lock)
+    (try
+      (let [{:keys [records]} (store/changes inner nil)
+            computed (leaves-of idx records)
+            t {:merkle (merkle/build (:leaves computed))
+               :actors (if computed #{(:actors computed)} #{})}]
+        (:tree (swap! state #(-> % (assoc :tree t) (update :generation inc)))))
+      (finally (.unlock lock)))))
 
 (defn inner
   "The store behind `s`, or `s` itself when it has no index."
