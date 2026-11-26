@@ -24,7 +24,8 @@
    Reading the counts for a report does fail, so a report never mistakes an
    unreadable usage file for one in which nothing was returned."
   (:require [clojure.edn :as edn]
-            [clojure.java.io :as io])
+            [clojure.java.io :as io]
+            [kajero.print :as kp])
   (:import (java.io File)
            (java.nio.file CopyOption Files StandardCopyOption)
            (java.nio.file.attribute FileAttribute)
@@ -210,7 +211,7 @@
   (let [dir (.getParentFile (.getAbsoluteFile f))
         tmp (Files/createTempFile (.toPath dir) (str "." (.getName f)) ".tmp" (make-array FileAttribute 0))]
     (try
-      (spit (.toFile tmp) (pr-str counts))
+      (spit (.toFile tmp) (kp/edn-str counts))
       (Files/move tmp (.toPath f) ^"[Ljava.nio.file.CopyOption;"
                   (into-array CopyOption [StandardCopyOption/ATOMIC_MOVE StandardCopyOption/REPLACE_EXISTING]))
       (finally (Files/deleteIfExists tmp)))))

@@ -12,6 +12,7 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [kajero.print :as kp]
             [kajero.record :as record])
   (:import (java.io File)
            (java.nio.file FileAlreadyExistsException Files OpenOption StandardOpenOption)
@@ -90,7 +91,7 @@
     (read-rows (query conn "SELECT record, sig FROM pages")))
   (append! [_ kind rec sig]
     (let [hash (record/hash-of rec)
-          text (pr-str rec)]
+          text (kp/edn-str rec)]
       (try
         (case kind
           :revision (execute! conn "INSERT INTO revisions (hash, entry, seq, record, sig) VALUES (?, ?, ?, ?, ?)"
@@ -173,7 +174,7 @@
                  :page (io/file dir "pages"))
           f (io/file home (file-name kind rec hash))]
       (try
-        (create-new! f (.getBytes (pr-str rec) "UTF-8"))
+        (create-new! f (.getBytes ^String (kp/edn-str rec) "UTF-8"))
         (catch FileAlreadyExistsException e
           (if (= :revision kind) (seq-taken! rec) (throw e))))
       (when sig (create-new! (io/file (str f ".sig")) sig))

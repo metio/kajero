@@ -6,8 +6,11 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
-            [kajero.web :as web]
-            [kajero.test-temp :as temp]))
+            [kajero.record :as record]
+            [kajero.store :as store]
+            [kajero.test-keys :as keys]
+            [kajero.test-temp :as temp]
+            [kajero.web :as web]))
 
 (use-fixtures :each temp/each)
 
@@ -266,3 +269,27 @@
         {:keys [entry]} (k/write! nb {:title "45.92.49.20 is our own HAProxy" :labels {"kind" "fact"} :actor "claude"})]
     (k/observe! nb entry {:outcome "missed" :selector "etherpad|lernraum" :actor "claude"})
     (is (str/includes? (:body (get-page nb (str "/e/" entry))) "missed by: etherpad|lernraum"))))
+
+(deftest the-signature-badge-says-whether-the-signature-verifies
+  (when-let [{:keys [key actors]} (keys/keypair "claude")]
+    (let [nb (k/notebook {:path (str (temp/temp-dir) "/notes.db") :actors actors})
+          write #(:entry (k/write! nb (merge {:labels {"kind" "fact"} :actor "claude"} %)))
+          good (write {:title "verified entry" :key key})
+          unsigned (write {:title "unsigned entry"})
+          bad (let [rec {:entry (str (random-uuid)) :seq 1 :base nil :title "bad entry" :body ""
+                         :labels {"kind" "fact"} :evidence [] :actor "claude" :at "2026-11-26T00:00:00Z"}]
+                (store/append! (:store nb) :revision rec (record/sign (keys/key-file) rec))
+                (:entry rec))
+          page #(:body (get-page nb (str "/e/" %)))
+          badges #(set (re-seq #"bad signature</span>|unsigned</span>" %))]
+      (is (= #{} (badges (page good))) "positive control: a verified entry carries no warning")
+      (is (= #{"unsigned</span>"} (badges (page unsigned))))
+      (is (= #{"bad signature</span>"} (badges (page bad))))
+      (is (str/includes? (page bad) "badge bad-signature"))
+      (testing "search results carry the badge too"
+        (let [body (:body (get-page nb "/view" "selector=unverified"))]
+          (is (str/includes? body "bad signature</span>"))
+          (is (str/includes? body "unsigned</span>"))
+          (is (not (str/includes? body "verified entry")))))
+      (testing "the history marks the record"
+        (is (str/includes? (page bad) " · bad signature"))))))

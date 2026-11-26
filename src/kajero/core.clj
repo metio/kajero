@@ -21,7 +21,8 @@
             [kajero.standing :as standing]
             [kajero.store :as store]
             [kajero.tik :as tik]
-            [kajero.usage :as usage])
+            [kajero.usage :as usage]
+            [kajero.verify :as verify])
   (:import (java.time Instant)))
 
 (def ^:dynamic *now*
@@ -44,6 +45,7 @@
   [{:keys [signing actors tik-root tik-status dir] :or {signing :optional} :as opts}]
   (let [s (store/open opts)]
     {:store s :signing signing :actors actors
+     :verifier (verify/verifier actors)
      :usage (usage/recorder (if dir (usage/file-log (usage/beside dir)) (usage/sqlite-log (:conn s))))
      :tik-status (or tik-status (when tik-root (tik/status-in tik-root)))}))
 
@@ -142,6 +144,37 @@
 
 (defn- entry-ids [nb] (store/entries (:store nb)))
 
+(defn- signature
+  "Whether the record's signature verifies against the actors file now:
+   {:signature :verified|:unsigned|:bad-signature}, see kajero.verify.
+   `hash` is the record's hash when the caller has it already."
+  ([nb rec] (signature nb rec nil))
+  ([nb rec hash] (verify/verdict (:verifier nb) rec hash)))
+
+(defn verify-current!
+  "Judges the signature of every entry's current revision, which every
+   search reads, so later searches find the verdicts cached. Returns the
+   number judged. The web and MCP servers run it on a background thread at
+   start; a read that comes first judges what it needs itself."
+  [nb]
+  (let [s (:store nb)]
+    (verify/warm! (:verifier nb) (keep #(peek (store/revisions s %)) (store/entries s)))))
+
+(defn verify-in-background!
+  "Runs verify-current! on a daemon thread, so a server answers while the
+   verdicts are judged and the thread never keeps the JVM alive. A failure
+   is logged; reads judge what they need themselves either way."
+  ^Thread [nb]
+  (doto (Thread. ^Runnable (fn []
+                             (try (verify-current! nb)
+                                  (catch Exception e
+                                    (binding [*out* *err*]
+                                      (println "kajero: verifying signatures in the background failed:"
+                                               (or (ex-message e) (.getName (class e))))))))
+                 "kajero-verify")
+    (.setDaemon true)
+    (.start)))
+
 (defn- corrections
   "Every observation a later one corrected, oldest first:
    {:observation :outcome :revision :actor :at} of the corrected one with
@@ -182,12 +215,14 @@
   [nb entry]
   (let [revisions (revisions-of nb entry)
         rev (peek revisions)
+        rev-hash (record/hash-of rev)
         all-observations (observations-of nb entry)
         observations (counted all-observations)
-        of-current (filter #(= (record/hash-of rev) (:revision %)) observations)
-        links (links-of nb entry)]
+        of-current (filter #(= rev-hash (:revision %)) observations)
+        links (links-of nb entry)
+        state (:signature (signature nb rev rev-hash))]
     {:entry entry
-     :revision (record/hash-of rev)
+     :revision rev-hash
      :title (:title rev)
      :body (:body rev)
      :labels (:labels rev)
@@ -196,7 +231,8 @@
      :evidence (:evidence rev)
      :data (:data rev)
      :schema (:schema rev)
-     :signed? (some? (:sig rev))
+     :signed? (= :verified state)
+     :signature state
      :standing (standing/derive-standing rev of-current (now))
      :missed (missed of-current)
      :links (mapv #(select-keys % [:source :type :target]) links)
@@ -241,7 +277,9 @@
    :disputed? (:disputed? standing)
    :stale? (:stale? standing)
    :missed? (boolean (seq missed))
-   :unsigned? (not signed?)
+   :unsigned? (= :unsigned (:signature v))
+   :bad-signature? (= :bad-signature (:signature v))
+   :unverified? (not signed?)
    :superseded? superseded?
    :retired? (some? retired)})
 
@@ -294,7 +332,7 @@
          (sort (fn [x y] (let [by-rank (compare (:rank y 0) (:rank x 0))]
                            (if (zero? by-rank) (compare (:at y) (:at x)) by-rank))))
          (mapv (fn [v]
-                 (-> (select-keys v [:entry :revision :title :labels :at :standing :score :citations :rank :matches])
+                 (-> (select-keys v [:entry :revision :title :labels :at :standing :signature :score :citations :rank :matches])
                      (cond-> (:retired v) (assoc :retired (:retired v))
                              data-terms (assoc :rows (dq/matching (:data v) data-terms)))
                      (assoc :summary (first (str/split-lines (or (:body v) ""))))))))))
@@ -341,18 +379,21 @@
   "Every revision, observation and link of the entry, oldest first. An
    observation a later one corrected carries :corrected-by."
   [nb id]
-  (->> (concat (for [r (revisions-of nb id)] [:revision r])
+  (->> (concat (for [r (revisions-of nb id)] [:revision r nil])
                (let [obs (observations-of nb id)
                      corrector (into {} (keep #(when (:corrects %) [(:corrects %) (record/hash-of %)])) obs)]
                  (for [o obs
                        :let [h (record/hash-of o)]]
-                   [:observation (cond-> (assoc o :hash h)
-                                   (corrector h) (assoc :corrected-by (corrector h)))]))
-               (for [l (links-of nb id)] [:link l]))
-       (map (fn [[kind r]]
-              (-> r
-                  (assoc :kind kind :hash (or (:hash r) (record/hash-of r)) :signed? (some? (:sig r)))
-                  (dissoc :sig))))
+                   [:observation o (when (corrector h) {:corrected-by (corrector h)})]))
+               (for [l (links-of nb id)] [:link l nil]))
+       (map (fn [[kind r extra]]
+              (let [h (record/hash-of r)
+                    {state :signature} (signature nb r h)]
+                (-> r
+                    (dissoc :sig)
+                    (assoc :kind kind :hash h
+                           :signed? (= :verified state) :signature state)
+                    (merge extra)))))
        (sort-by :at)
        vec))
 

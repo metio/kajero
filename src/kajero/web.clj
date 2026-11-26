@@ -16,7 +16,8 @@
             [hiccup2.core :as h]
             [kajero.core :as k]
             [kajero.data :as data]
-            [kajero.mcp :as mcp])
+            [kajero.mcp :as mcp]
+            [kajero.print :as kp])
   (:import (com.sun.net.httpserver HttpExchange HttpHandler HttpServer)
            (java.net InetSocketAddress URLDecoder URLEncoder)
            (java.nio.charset StandardCharsets)
@@ -97,7 +98,7 @@ padding:.25rem .5rem;border-radius:999px;text-decoration:none;border:1px solid t
 border:1px solid var(--rule);display:inline-flex;gap:.35rem;align-items:center}
 .badge.held{color:var(--held)}.badge.failed,.badge.disputed{color:var(--failed);border-color:color-mix(in srgb,var(--failed) 45%,transparent)}
 .badge.stale{color:var(--stale);border-color:color-mix(in srgb,var(--stale) 45%,transparent)}
-.badge.unsigned{color:var(--muted)}.badge.retired{color:var(--muted)}.retired{color:var(--muted)}
+.badge.unsigned{color:var(--muted)}.badge.bad-signature{color:var(--failed);border-color:color-mix(in srgb,var(--failed) 45%,transparent)}.badge.retired{color:var(--muted)}.retired{color:var(--muted)}
 .group{margin-top:2rem}.group>h2{font-family:ui-monospace,Menlo,monospace;font-size:.9rem;
 text-transform:uppercase;letter-spacing:.12em;color:var(--muted);border-bottom:1px solid var(--rule);padding-bottom:.4rem}
 .row{display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-start}
@@ -174,14 +175,25 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
    (for [[key value] (sort labels)]
      [:a.chip {:href (view-href (str "label:" key "=" value))} [:b key "="] value])])
 
-(defn- standing [{:keys [held failed last-held disputed? stale?]} signed?]
+(defn- signature-badge
+  "The badge of a record whose signature does not verify; nil for a
+   verified one or when the state is not known."
+  [state]
+  (case state
+    :unsigned [:span.badge.unsigned {:title "no signature"} "unsigned"]
+    :bad-signature [:span.badge.bad-signature
+                    {:title "the signature does not verify as its actor against the actors file"}
+                    "bad signature"]
+    nil))
+
+(defn- standing [{:keys [held failed last-held disputed? stale?]} signature]
   [:div.standing
    [:span.badge.held {:title (str "independent held observations" (when last-held (str ", last " (when-str last-held))))}
     "held " held]
    (when (pos? failed) [:span.badge.failed "failed " failed])
    (when disputed? [:span.badge.disputed "disputed"])
    (when stale? [:span.badge.stale "stale"])
-   (when (false? signed?) [:span.badge.unsigned "unsigned"])])
+   (signature-badge signature)])
 
 (defn- layout [{:keys [title selector]} & content]
   (str "<!doctype html>"
@@ -261,11 +273,11 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
         (when title [:span title])
         (when (seq current) [:span.stage (str/join " " current)])])]))
 
-(defn- sheet [nb {:keys [entry title body labels at actor standing signed?] :as e} full?]
+(defn- sheet [nb {:keys [entry title body labels at actor standing signature] :as e} full?]
   [:article.sheet
    [:h3 [:a {:href (str "/e/" entry)} title]]
    (chips labels)
-   (kajero.web/standing standing (if (contains? e :signed?) signed? true))
+   (kajero.web/standing standing signature)
    (if full?
      (list [:div.body (markdown body)] (data-view nb e))
      (when-let [s (:summary e)] [:p.meta s]))
@@ -336,7 +348,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                  [[] false]
                  records)))
 
-(defn- history-item [{:keys [kind actor at outcome evidence title type source target hash signed? retired restored?
+(defn- history-item [{:keys [kind actor at outcome evidence title type source target hash signature retired restored?
                              corrects corrected-by selector]}]
   [:li {:class (if (= kind :observation) (str "observation-" outcome) (name kind))}
    [:div [:strong (case kind
@@ -345,7 +357,10 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                                     :else (str "revised: " title))
                     :observation (str "observed: " outcome)
                     :link (str source " " type " " target))]]
-   [:div.meta actor " · " (when-str at) (when-not signed? " · unsigned")]
+   [:div.meta actor " · " (when-str at) (case signature
+                                          :unsigned " · unsigned"
+                                          :bad-signature " · bad signature"
+                                          nil)]
    (when (seq evidence) [:div.meta "evidence: " (str/join "; " evidence)])
    (when selector [:div.meta "missed by: " selector])
    (when corrects [:div.meta "corrects " (subs corrects 0 (min 19 (count corrects)))])
@@ -354,12 +369,12 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
    [:div.selector {:title hash} (subs hash 0 (min 19 (count hash)))]])
 
 (defn- entry-page [nb id token]
-  (when-let [{:keys [title body labels standing evidence links revision actor at signed? tickets retired] :as e} (k/open! nb nil id)]
+  (when-let [{:keys [title body labels standing evidence links revision actor at signature tickets retired] :as e} (k/open! nb nil id)]
     (layout {:title title}
             [:article.sheet
              [:h1 title]
              (chips labels)
-             (kajero.web/standing standing signed?)
+             (kajero.web/standing standing signature)
              (when retired
                [:p.retired [:span.badge.retired "retired"] " " (:reason retired)
                 " - left out of searches until it is restored"])
@@ -505,7 +520,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
 (defn- edn-response [status value]
   {:status status
    :headers {"Content-Type" "application/edn; charset=utf-8"}
-   :body (binding [*print-namespace-maps* false] (pr-str value))})
+   :body (kp/edn-str value)})
 
 (defn- edn-read
   "The EDN a tool reads instead of a page: the same data the pages render,
@@ -742,6 +757,9 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
               {:token (mcp-token (slurp token-file))
                :writer {:actor (env "KAJERO_MCP_ACTOR") :key (env "KAJERO_MCP_KEY")}})]
     (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port mcp (contains? offered "http"))
+    ;; Flat files can be read from a second thread; a SQLite notebook
+    ;; shares one connection, so its reads judge their verdicts themselves.
+    (when (env "KAJERO_DIR") (k/verify-in-background! nb))
     (println (str "kajero on http://127.0.0.1:" port ":"
                   (when (offered "http") " pages")
                   (when (= 2 (count offered)) " and")

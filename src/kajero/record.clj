@@ -5,8 +5,11 @@
 
    A record is a map of plain data. Its canonical form prints every map with
    sorted keys, so the same record always gives the same bytes, the same
-   hash and a signature that verifies wherever the bytes are read."
+   hash and a signature that verifies wherever the bytes are read. The
+   text is printed by kajero.print under fixed print settings, so the
+   bytes do not depend on the thread or process that prints them."
   (:require [clojure.string :as str]
+            [kajero.print :as kp]
             [tik.sign :as sign])
   (:import (java.nio.charset StandardCharsets)
            (java.security MessageDigest)))
@@ -24,9 +27,25 @@
     (sequential? x) (mapv canonical x)
     :else x))
 
+(defn- render
+  ^bytes [settings record]
+  (.getBytes ^String (kp/edn-str settings (canonical (dissoc record :sig))) StandardCharsets/UTF_8))
+
 (defn ->bytes
+  "The canonical bytes of the record: what its hash covers and what a new
+   signature signs."
   ^bytes [record]
-  (.getBytes (pr-str (canonical (dissoc record :sig))) StandardCharsets/UTF_8))
+  (render kp/settings record))
+
+(defn legacy-bytes
+  "The bytes the record printed as on a thread with *print-namespace-maps*
+   true, as the CLI and the stdio MCP server signed them before the print
+   settings were fixed; nil when they equal the canonical bytes, which is
+   every record without a map whose keys share one namespace."
+  ^bytes [record]
+  (let [legacy (render (assoc kp/settings :namespace-maps true) record)]
+    (when-not (java.util.Arrays/equals legacy (->bytes record))
+      legacy)))
 
 (defn hash-of
   "The sha256 of the record's canonical bytes, as `sha256-<hex>`."

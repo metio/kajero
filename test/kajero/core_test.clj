@@ -2,12 +2,14 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.core-test
   (:require [clojure.java.io :as io]
-            [clojure.java.shell :as sh]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
+            [kajero.record :as record]
             [kajero.standing :as standing]
             [kajero.store :as store]
-            [kajero.test-temp :as temp])
+            [kajero.test-keys :as keys]
+            [kajero.test-temp :as temp]
+            [tik.sign])
   (:import (java.time Instant)))
 
 (def ^:private ^:dynamic *backend* :sqlite)
@@ -219,14 +221,7 @@
 
 ;; ---------------------------------------------------------------- signing
 
-(defn- keypair
-  "A fresh ed25519 key and an actors file naming it, or nil without ssh-keygen."
-  [actor]
-  (let [dir (temp/temp-dir)
-        key (str dir "/id_ed25519")]
-    (when (zero? (:exit (sh/sh "ssh-keygen" "-q" "-t" "ed25519" "-N" "" "-f" key)))
-      (spit (str dir "/actors") (str actor " namespaces=\"kajero\" " (slurp (str key ".pub"))))
-      {:key key :actors (str dir "/actors")})))
+(def ^:private keypair keys/keypair)
 
 (deftest a-required-notebook-takes-only-verified-signatures
   (when-let [{:keys [key actors]} (keypair "claude")]
@@ -243,6 +238,90 @@
     (let [nb (notebook {:actors actors})]
       (is (false? (:signed? (k/entry nb (:entry (k/write! nb gotcha))))))
       (is (true? (:signed? (k/entry nb (:entry (k/write! nb (assoc gotcha :title "z" :key key))))))))))
+
+(defn- forged!
+  "Appends a first revision to the notebook's store directly, signed by
+   `key` whatever the actors file says, as a git pull or a hand copy
+   would place it; returns its entry id."
+  [nb key r]
+  (let [id (str (random-uuid))
+        rec (merge {:entry id :seq 1 :base nil :body "" :labels {"kind" "fact"} :evidence []
+                    :actor "claude" :at "2026-11-26T00:00:00Z"}
+                   r)]
+    (store/append! (:store nb) :revision rec (when key (record/sign key rec)))
+    id))
+
+(deftest signatures-read-as-verified-unsigned-or-bad
+  (when-let [{:keys [key actors]} (keypair "claude")]
+    (let [nb (notebook {:actors actors})
+          {good :entry} (k/write! nb (assoc gotcha :key key))
+          {unsigned :entry} (k/write! nb (assoc gotcha :title "no key"))
+          foreign (forged! nb (keys/key-file) {:title "a key the actors file does not name"})
+          tampered (let [rec {:entry (str (random-uuid)) :seq 1 :base nil :title "tampered" :body "as signed"
+                              :labels {"kind" "fact"} :evidence [] :actor "claude" :at "2026-11-26T00:00:00Z"}]
+                     (store/append! (:store nb) :revision (assoc rec :body "changed after signing")
+                                    (record/sign key rec))
+                     (:entry rec))
+          ids #(set (map :entry (k/search nb %)))]
+      (testing "the entry carries the state and signed? means verified"
+        (is (= [:verified true] ((juxt :signature :signed?) (k/entry nb good))))
+        (is (= [:unsigned false] ((juxt :signature :signed?) (k/entry nb unsigned))))
+        (is (= [:bad-signature false] ((juxt :signature :signed?) (k/entry nb foreign))))
+        (is (= [:bad-signature false] ((juxt :signature :signed?) (k/entry nb tampered)))))
+      (testing "selector terms"
+        (is (= #{unsigned} (ids "unsigned")))
+        (is (= #{foreign tampered} (ids "bad-signature")))
+        (is (= #{unsigned foreign tampered} (ids "unverified")))
+        (is (= #{good} (ids "not unverified")))
+        (is (= #{good unsigned} (ids "not bad-signature")))
+        (is (= #{unsigned foreign} (ids "unsigned|~actors"))))
+      (testing "search summaries carry the state"
+        (is (= {good :verified unsigned :unsigned foreign :bad-signature tampered :bad-signature}
+               (into {} (map (juxt :entry :signature)) (k/search nb "")))))
+      (testing "the history judges every record"
+        (k/observe! nb good {:outcome "held" :evidence ["checked"] :actor "claude" :key key})
+        (is (= [[:revision :verified] [:observation :verified]]
+               (map (juxt :kind :signature) (k/history nb good))))))))
+
+(deftest removing-an-actor-turns-its-entries-unverified
+  (when-let [{:keys [key actors]} (keypair "claude")]
+    (let [nb (notebook {:actors actors})
+          {:keys [entry]} (k/write! nb (assoc gotcha :key key))]
+      (is (= :verified (:signature (k/entry nb entry))))
+      (spit actors "")
+      (is (= :bad-signature (:signature (k/entry nb entry))))
+      (is (= #{entry} (set (map :entry (k/search nb "bad-signature"))))))))
+
+(deftest a-record-signed-over-the-legacy-rendering-reads-as-verified
+  (when-let [{:keys [key actors]} (keypair "claude")]
+    (let [nb (notebook {:actors actors})
+          rec {:entry (str (random-uuid)) :seq 1 :base nil :title "legacy" :body "" :labels {"kind" "fact"}
+               :evidence [] :actor "claude" :at "2026-11-26T00:00:00Z" :data {:a/x 1 :a/y 2}}
+          sig (tik.sign/sign-bytes key (record/legacy-bytes rec) record/signature-namespace)]
+      (store/append! (:store nb) :revision rec sig)
+      (is (= :verified (:signature (k/entry nb (:entry rec)))))
+      (is (empty? (k/search nb "unverified"))))))
+
+(deftest verifying-the-current-revisions-ahead-fills-the-cache
+  (when-let [{:keys [key actors]} (keypair "claude")]
+    (let [nb (notebook {:actors actors})]
+      (dotimes [i 3] (k/write! nb (assoc gotcha :title (str "e" i) :key key)))
+      (k/write! nb (assoc gotcha :title "unsigned"))
+      (is (= 4 (k/verify-current! nb)))
+      (let [calls (atom 0)
+            nb (update nb :verifier (fn [v] (assoc v :check (fn [& args] (swap! calls inc)
+                                                              (apply (:check v) args)))))]
+        (is (= 3 (count (k/search nb "not unverified"))))
+        (is (zero? @calls))))))
+
+(deftest a-background-verification-ends-and-never-blocks
+  (when-let [{:keys [key actors]} (keypair "claude")]
+    (let [nb (notebook {:actors actors})]
+      (k/write! nb (assoc gotcha :key key))
+      (let [t (k/verify-in-background! nb)]
+        (is (.isDaemon t))
+        (.join t 30000)
+        (is (not (.isAlive t)))))))
 
 (deftest a-revision-number-lands-once-whoever-writes-it
   (let [nb (notebook)

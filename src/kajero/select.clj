@@ -14,7 +14,11 @@
      link:see-also=<id>         linked to it by that type
      schema-revision=<hash>     the data was checked against that schema revision
      outdated-schema            the data was checked against an older schema revision
-     disputed | stale | unsigned | superseded | retired
+     disputed | stale | superseded | retired
+     unsigned                   the current revision carries no signature
+     bad-signature              it carries one that does not verify against
+                                the actors file - see kajero.verify
+     unverified                 either: its signature does not verify
      missed                     a search did not find the current revision
                                 although it held the answer: the entry
                                 needs the words a searcher would use
@@ -47,7 +51,8 @@
 
    `compile` returns a predicate over a row
      {:labels {\"kind\" \"gotcha\"} :actors #{\"seb\"} :links #{[\"see-also\" id]} :haystack \"...\" :data ...
-      :disputed? bool :stale? bool :missed? bool :unsigned? bool :superseded? bool}
+      :disputed? bool :stale? bool :missed? bool :unsigned? bool :bad-signature? bool
+      :unverified? bool :superseded? bool}
    or throws ex-info {:reason :select/bad-term}."
   (:refer-clojure :exclude [compile])
   (:require [clojure.string :as str]
@@ -146,6 +151,8 @@
     (= term "disputed") :disputed?
     (= term "stale") :stale?
     (= term "unsigned") :unsigned?
+    (= term "bad-signature") :bad-signature?
+    (= term "unverified") :unverified?
     (= term "superseded") :superseded?
     (= term "retired") :retired?
     (= term "missed") :missed?
@@ -211,7 +218,7 @@
   (and (boolean (seq (terms selector))) (not (reads-usage? selector))))
 
 (defn- text-term? [t]
-  (and (not (contains? #{"not" "disputed" "stale" "unsigned" "superseded" "retired" "outdated-schema" "coverage" "missed"} t))
+  (and (not (contains? #{"not" "disputed" "stale" "unsigned" "bad-signature" "unverified" "superseded" "retired" "outdated-schema" "coverage" "missed"} t))
        (not (usage-term t))
        (not (str/includes? t "="))
        (not (str/starts-with? t "label:"))
