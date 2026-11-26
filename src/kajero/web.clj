@@ -756,6 +756,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
         mcp (when (offered "mcp")
               {:token (mcp-token (slurp token-file))
                :writer {:actor (env "KAJERO_MCP_ACTOR") :key (env "KAJERO_MCP_KEY")}})]
+    (k/keep-flushing! nb)
     (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port mcp (contains? offered "http"))
     ;; Flat files can be read from a second thread; a SQLite notebook
     ;; shares one connection, so its reads judge their verdicts themselves.

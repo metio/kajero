@@ -306,10 +306,14 @@ The counts live beside the notebook and never in it: in the `usage`,
 `usage_folded` and `usage_meta` tables of the database, or in
 `<dir>.usage.edn` next to a flat-file notebook. They are unsigned, deleting
 them loses only the measurement, and daily rows older than 180 days fold
-into one total per entry. A count that can not be written is logged on
-stderr and dropped, and the search or read answers as it would have; a
-report that can not read the counts is refused rather than answered as if
-nothing was returned.
+into one total per entry. A count is kept in memory and written every 30
+seconds, when the server shuts down, and when a command-line command ends,
+so the search or read never waits for the usage file. A report reads the
+counts written and those still in memory. Counts that can not be written
+are logged on stderr and kept for the next attempt, up to 100,000 daily
+per-entry counts in memory; the search or read answers as it would have, and a report that
+can not read the counts is refused rather than answered as if nothing was
+returned.
 
 ```sh
 bb kajero usage                       # both lists, and the day counting began

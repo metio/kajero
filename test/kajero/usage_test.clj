@@ -204,25 +204,31 @@
         broken (assoc nb :usage (usage/recorder (->BrokenLog)))
         lines (atom [])]
     (with-redefs [usage/log! (fn [& parts] (swap! lines conj (str/join " " parts)))]
-      (is (= (k/search nb "coredns") (k/search! broken nil "coredns")))
-      (is (= (k/entry nb a) (k/open! broken nil a))))
-    (is (= 2 (count @lines)) "each lost count is logged")
+      (binding [k/*now* t0]
+        (is (= (k/search nb "coredns") (k/search! broken nil "coredns")))
+        (is (= (k/entry nb a) (k/open! broken nil a))))
+      (is (empty? @lines) "counting itself writes nothing")
+      (k/flush! broken))
+    (is (= 1 (count @lines)) "the day that could not be written is logged once")
     (is (every? #(str/includes? % "disk full") @lines))
-    (is (str/includes? (first @lines) "usage not recorded for a search"))
-    (is (str/includes? (second @lines) "usage not recorded for a read"))
+    (is (str/includes? (first @lines) "usage not recorded for 1 entry of 2026-11-25 - kept for the next flush"))
     (is (not-any? #(str/includes? % "coredns") @lines) "the log keeps the query text out")
+    (is (= {(usage/day t0) {a {:returned 1 :opened 1 :opened-after-return 0}}} @(:pending (:usage broken)))
+        "the counts wait in memory for the next flush")
     (testing "a report refuses instead of reading unreadable counts as none"
       (is (= :kajero/usage-unreadable
              (:reason (ex-data (try (k/search broken "never-returned") nil
                                     (catch clojure.lang.ExceptionInfo e e)))))))))
 
-(deftest a-failed-count-on-stderr-reaches-the-log
+(deftest a-failed-flush-on-stderr-reaches-the-log
   (let [nb (assoc (sqlite) :usage (usage/recorder (->BrokenLog)))
         _ (write! nb "CoreDNS caches answers")
         err (java.io.StringWriter.)]
     (binding [*err* err]
-      (is (= 1 (count (k/search! nb nil "coredns")))))
-    (is (str/includes? (str err) "kajero: usage not recorded for a search - disk full"))))
+      (is (= 1 (count (k/search! nb nil "coredns"))))
+      (k/flush! nb))
+    (is (str/includes? (str err) "kajero: usage not recorded for 1 entry of"))
+    (is (str/includes? (str err) "- kept for the next flush - disk full"))))
 
 (deftest an-unreadable-usage-file-is-never-overwritten
   (let [dir (str (temp/temp-dir) "/notes")
@@ -231,11 +237,13 @@
         f (usage/beside dir)]
     (spit f "{:not counts")
     (with-redefs [usage/log! (fn [& _])]
-      (is (= 1 (count (k/search! nb nil "coredns")))))
+      (is (= 1 (count (k/search! nb nil "coredns"))))
+      (k/flush! nb))
     (is (= "{:not counts" (slurp f)) "the measurement is kept for a human to repair")
     (spit f "[1 2 3]")
     (with-redefs [usage/log! (fn [& _])]
-      (is (= 1 (count (k/search! nb nil "coredns")))))
+      (is (= 1 (count (k/search! nb nil "coredns"))))
+      (k/flush! nb))
     (is (= "[1 2 3]" (slurp f)))))
 
 (deftest the-counts-of-a-flat-file-notebook-live-beside-it
@@ -243,6 +251,8 @@
         nb (k/notebook {:dir (str root "/notes")})
         a (write! nb "CoreDNS caches answers")]
     (binding [k/*now* t0] (k/search! nb nil "coredns"))
+    (is (not (.isFile (io/file root "notes.usage.edn"))) "a count waits in memory for the flush")
+    (k/close! nb)
     (is (.isFile (io/file root "notes.usage.edn")))
     (is (not (str/includes? (str/join "\n" (map str (file-seq (io/file root "notes")))) "usage"))
         "nothing inside the record directory")
@@ -267,6 +277,7 @@
                  now (.plus old (Duration/ofDays (inc usage/retention-days)))]
              (binding [k/*now* old] (k/search! nb nil "coredns") (k/search! nb nil "coredns"))
              (binding [k/*now* now] (k/search! nb nil "coredns"))
+             (k/flush! nb)
              (let [c (usage/counts (:usage nb))]
                (is (= [(usage/day now)] (keys (get-in c [:days a]))) "only the recent day stays a row")
                (is (= 2 (get-in c [:folded a :returned])))

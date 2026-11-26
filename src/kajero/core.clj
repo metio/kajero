@@ -47,7 +47,8 @@
 
    Searches and reads made through search! and open! are counted beside
    the notebook - see kajero.usage: in the database's usage tables, or in
-   <dir>.usage.edn next to a flat-file notebook."
+   <dir>.usage.edn next to a flat-file notebook. The counts are held in
+   memory until flush! or close! writes them."
   [{:keys [signing actors tik-root tik-status dir refresh-ms index?] :or {signing :optional index? true} :as opts}]
   (let [s (store/open opts)]
     {:store (if index? (index/indexed s {:refresh-ms refresh-ms}) s)
@@ -55,6 +56,25 @@
      :verifier (verify/verifier actors)
      :usage (usage/recorder (if dir (usage/file-log (usage/beside dir)) (usage/sqlite-log (:conn s))))
      :tik-status (or tik-status (when tik-root (tik/cached (tik/status-in tik-root))))}))
+
+(defn flush!
+  "Writes the usage counts held in memory - see kajero.usage."
+  [nb]
+  (usage/flush! (:usage nb)))
+
+(defn close!
+  "Stops the notebook's periodic flush, if one runs, and writes the counts
+   still held in memory."
+  [nb]
+  (usage/close! (:usage nb)))
+
+(defn keep-flushing!
+  "Writes the usage counts every usage/flush-interval-ms, and once more
+   when the JVM shuts down. For a long-running server."
+  [nb]
+  (usage/start-flushing! (:usage nb))
+  (.addShutdownHook (Runtime/getRuntime) (Thread. ^Runnable (fn [] (close! nb))))
+  nb)
 
 (defn- check-tickets!
   "Refuses evidence citing a ticket the bound tik store does not hold. A

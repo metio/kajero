@@ -120,7 +120,8 @@
                           :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
                           :actors (env "KAJERO_ACTORS")
                           :tik-root (env "KAJERO_TIK_ROOT")})]
-      (pp/pprint (run-command nb args))
+      (try (pp/pprint (run-command nb args))
+           (finally (k/close! nb)))
       (shutdown-agents))
     (catch clojure.lang.ExceptionInfo e
       (binding [*out* *err*]
