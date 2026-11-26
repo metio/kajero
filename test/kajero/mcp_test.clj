@@ -195,11 +195,20 @@
     {:key key :actors actors}))
 
 (defn- check-skills-protocol
-  [rpc actors]
+  "The skill as a client of one era sees it through `rpc`; the modern era
+   starts with server/discover instead of initialize."
+  [rpc actors & [era]]
   (let [call (fn [id method & [params]]
                (keywordized (rpc (cond-> {:jsonrpc "2.0" :id id :method method} params (assoc :params params)))))
-        init (:result (call 1 "initialize" {:protocolVersion "2025-06-18" :capabilities {}}))]
-    (testing "initialize declares resources and the extension next to them, and names the SKILL.md URI"
+        init (if (= :modern era)
+               (:result (call 1 "server/discover" {}))
+               (:result (call 1 "initialize" {:protocolVersion "2025-06-18" :capabilities {}})))]
+    (when (= :modern era)
+      (testing "server/discover names the revision and the server"
+        (is (= ["2026-07-28"] (:supportedVersions init)))
+        (is (= "complete" (:resultType init)))
+        (is (= "kajero" (get-in init [:_meta :io.modelcontextprotocol/serverInfo :name])))))
+    (testing "the server declares resources and the extension next to them, and names the SKILL.md URI"
       (is (= {} (get-in init [:capabilities :resources])))
       (is (= {} (get-in init [:capabilities :extensions (keyword skills/extension-id)])))
       (is (str/includes? (:instructions init) "skill://kajero/SKILL.md")))
@@ -294,3 +303,122 @@
     (is (= [] (get-in (call {:jsonrpc "2.0" :id 3 :method "resources/list"}) [:result :resources])))
     (is (= -32602 (get-in (call {:jsonrpc "2.0" :id 4 :method "resources/read" :params {:uri "skill://kajero/SKILL.md"}})
                           [:error :code])))))
+
+;; ---------------------------------------------------- modern revisions
+
+(def ^:private modern-meta
+  {"io.modelcontextprotocol/protocolVersion" "2026-07-28"
+   "io.modelcontextprotocol/clientInfo" {"name" "test" "version" "1"}
+   "io.modelcontextprotocol/clientCapabilities" {}})
+
+(defn- modern-message [msg]
+  (update msg :params #(assoc (or % {}) :_meta modern-meta)))
+
+(defn- mirrored-headers
+  "The headers a modern client sends for `msg`."
+  [{:keys [method params]}]
+  (cond-> {"mcp-protocol-version" ["2026-07-28"] "mcp-method" [method]}
+    (#{"tools/call"} method) (assoc "mcp-name" [(:name params)])
+    (#{"resources/read"} method) (assoc "mcp-name" [(:uri params)])))
+
+(defn- http-response
+  "The HTTP response of /mcp to `msg` with `headers`."
+  [nb writer msg headers]
+  (let [r (web/mcp-endpoint nb {:token "s3cret" :writer writer :port 7270}
+                            {:method "POST" :authorization "Bearer s3cret" :mcp-headers headers
+                             :body (json/generate-string msg)})]
+    (assoc r :json (some-> (:body r) not-empty (json/parse-string true)))))
+
+(deftest skills-are-served-over-stdio-to-a-modern-client
+  (let [nb (notebook)
+        catalog (staged-catalog)
+        {:keys [key actors]} (with-actors-for-manifests)
+        writer {:actor "claude" :key key}]
+    (check-skills-protocol (fn [msg] (mcp/handle nb writer nil (json/generate-string (modern-message msg)) {:skills catalog}))
+                           actors :modern)))
+
+(deftest skills-are-served-over-http-to-a-modern-client
+  (let [nb (notebook)
+        catalog (staged-catalog)
+        {:keys [key actors]} (with-actors-for-manifests)
+        writer {:actor "claude" :key key}]
+    (with-redefs [skills/served (delay catalog)]
+      (check-skills-protocol (fn [msg]
+                               (let [m (modern-message msg)
+                                     {:keys [status json headers]} (http-response nb writer m (mirrored-headers m))]
+                                 (is (nil? (get headers "Mcp-Session-Id")) "a modern request mints no session")
+                                 (when (:error json)
+                                   (is (= 200 status) "an invalid skill URI answers 200 with the error"))
+                                 json))
+                             actors :modern))))
+
+(deftest a-modern-request-is-checked-before-it-is-answered
+  (let [nb (notebook)
+        catalog (staged-catalog)
+        writer {:actor "claude"}
+        tools-list (modern-message {:jsonrpc "2.0" :id 1 :method "tools/list"})
+        read-skill (modern-message {:jsonrpc "2.0" :id 2 :method "resources/read" :params {:uri "skill://kajero/SKILL.md"}})]
+    (with-redefs [skills/served (delay catalog)]
+      (testing "the tools answer a modern client"
+        (let [{:keys [status json]} (http-response nb writer tools-list (mirrored-headers tools-list))]
+          (is (= 200 status))
+          (is (= (count mcp/tools) (count (get-in json [:result :tools]))))
+          (is (= "complete" (get-in json [:result :resultType])))))
+      (testing "an unsupported revision is refused with the supported ones"
+        (let [m (assoc-in tools-list [:params :_meta "io.modelcontextprotocol/protocolVersion"] "2099-01-01")
+              {:keys [status json]} (http-response nb writer m (assoc (mirrored-headers m) "mcp-protocol-version" ["2099-01-01"]))]
+          (is (= 400 status))
+          (is (= -32022 (get-in json [:error :code])))
+          (is (= {:supported ["2026-07-28"] :requested "2099-01-01"} (get-in json [:error :data])))))
+      (testing "a request without the client's capabilities is malformed"
+        (let [m (update-in tools-list [:params :_meta] dissoc "io.modelcontextprotocol/clientCapabilities")
+              {:keys [status json]} (http-response nb writer m (mirrored-headers m))]
+          (is (= 400 status))
+          (is (= -32602 (get-in json [:error :code])))))
+      (testing "server/discover without a revision is malformed"
+        (let [{:keys [status json]} (http-response nb writer {:jsonrpc "2.0" :id 3 :method "server/discover" :params {}}
+                                                   {"mcp-method" ["server/discover"]})]
+          (is (= 400 status))
+          (is (= -32602 (get-in json [:error :code])))))
+      (testing "headers that differ from the body are refused"
+        (doseq [[why headers] [["no version header" (dissoc (mirrored-headers read-skill) "mcp-protocol-version")]
+                               ["another version" (assoc (mirrored-headers read-skill) "mcp-protocol-version" ["2025-06-18"])]
+                               ["another method" (assoc (mirrored-headers read-skill) "mcp-method" ["tools/list"])]
+                               ["no name" (dissoc (mirrored-headers read-skill) "mcp-name")]
+                               ["another name" (assoc (mirrored-headers read-skill) "mcp-name" ["skill://kajero/other.md"])]
+                               ["a name sent twice" (assoc (mirrored-headers read-skill) "mcp-name" ["skill://kajero/SKILL.md" "skill://kajero/SKILL.md"])]
+                               ["a bad base64 name" (assoc (mirrored-headers read-skill) "mcp-name" ["=?base64?!!!?="])]]]
+          (let [{:keys [status json]} (http-response nb writer read-skill headers)]
+            (is (= 400 status) why)
+            (is (= -32020 (get-in json [:error :code])) why))))
+      (testing "a name in the Base64 sentinel form is decoded before it is compared"
+        (let [encoded (str "=?base64?" (.encodeToString (java.util.Base64/getEncoder) (.getBytes "skill://kajero/SKILL.md" "UTF-8")) "?=")
+              {:keys [status json]} (http-response nb writer read-skill (assoc (mirrored-headers read-skill) "mcp-name" [encoded]))]
+          (is (= 200 status))
+          (is (string? (get-in json [:result :contents 0 :text])))))
+      (testing "an unknown method is not found"
+        (let [m (modern-message {:jsonrpc "2.0" :id 4 :method "prompts/list"})
+              {:keys [status json]} (http-response nb writer m (mirrored-headers m))]
+          (is (= 404 status))
+          (is (= -32601 (get-in json [:error :code])))))
+      (testing "a legacy client on the same endpoint is unaffected"
+        (let [{:keys [status json headers]} (http-response nb writer {:jsonrpc "2.0" :id 5 :method "initialize"
+                                                                      :params {:protocolVersion "2025-06-18"}} {})]
+          (is (= 200 status))
+          (is (= "kajero" (get-in json [:result :serverInfo :name])))
+          (is (string? (get headers "Mcp-Session-Id")) "the handshake still mints a session"))))))
+
+(deftest a-modern-search-over-http-counts-for-no-session
+  (let [nb (notebook)
+        session (k/start-session! nb)
+        seen (atom [])
+        search (fn [m headers]
+                 (with-redefs [k/search! (fn [_ s _] (swap! seen conj s) [])]
+                   (web/mcp-endpoint nb {:token "s3cret" :writer {:actor "claude"} :port 7270}
+                                     {:method "POST" :authorization "Bearer s3cret" :session session
+                                      :mcp-headers headers :body (json/generate-string m)})))
+        legacy {:jsonrpc "2.0" :id 1 :method "tools/call" :params {:name "kajero_search" :arguments {:selector "~x"}}}
+        modern (modern-message legacy)]
+    (is (= 200 (:status (search legacy {}))))
+    (is (= 200 (:status (search modern (mirrored-headers modern)))))
+    (is (= [session nil] @seen) "the handshake session counts; a modern request carrying the header counts for none")))
