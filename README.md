@@ -408,9 +408,10 @@ java --enable-native-access=ALL-UNNAMED -jar kajero.jar serve
 ```
 
 The binary needs no JVM. Signing a write and checking a `tik:` citation
-still run `ssh-keygen` and `tik` from `PATH`, as on the JVM. It takes the
-JVM's heap options, such as `kajero serve -Xmx64m`, after the subcommand
-or before it.
+still run `ssh-keygen` and `tik` from `PATH`, as on the JVM. It hands every
+argument to kajero, an argument beginning with `-X`, `-XX:` or `-D`
+included, and takes no runtime options; its heap is capped at 128 MB when
+it is built. The uberjar takes the JVM's options as usual.
 
 To build both locally, with the toolchain from breto and a static zlib
 (`zlib1g-dev` on Debian and Ubuntu, `zlib-ng-compat-static` on Fedora):

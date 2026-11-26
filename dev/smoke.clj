@@ -13,7 +13,8 @@
      kajero_write signed as the MCP actor, kajero_search and kajero_get,
      which marks the written revision verified;
    - the stdio MCP server answers initialize;
-   - the command line runs search and labels;
+   - the command line runs search and labels, and an argument beginning
+     with -D or -XX: reaches it instead of the runtime;
    - a SQLite notebook takes a signed write from the command line, checks
      its tik: citation with `tik status` (a stub on PATH) and refuses one
      tik does not know;
@@ -139,6 +140,14 @@
         (let [{:keys [exit out err]} @(run {:out :string :err :string} "search" "label:system=smoke")
               found (when (zero? exit) (edn/read-string out))]
           (check! (= [entry] (map :entry found)) "the CLI search found the entry" err))
+        ;; a native executable would take these for itself unless it is
+        ;; built not to parse runtime options
+        (let [title "-Dorg.sqlite.lib.path=/nonexistent -XX:+PrintGC"
+              {:keys [exit out err]} @(run {:out :string :err :string} "write" title "--label" "kind=fact"
+                                           "--label" "system=smoke-args")
+              id (when (zero? exit) (:entry (edn/read-string out)))
+              got (when id (edn/read-string (:out @(run {:out :string :err :string} "get" id))))]
+          (check! (= title (:title got)) "an argument beginning with -D reached the CLI as the title" err))
         (let [{:keys [exit out err]} @(run {:out :string :err :string} "labels")]
           (check! (and (zero? exit) (str/includes? out "smoke")) "the CLI labels lists system=smoke" err))
         ;; a SQLite notebook bound to a tik store, written from the command
