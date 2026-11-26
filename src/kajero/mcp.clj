@@ -254,9 +254,11 @@
     ;; Flat files can be read from a second thread; a SQLite notebook
     ;; shares one connection, so its reads judge their verdicts themselves.
     (when (env "KAJERO_DIR") (k/verify-in-background! nb))
+    (k/keep-flushing! nb)
     (loop []
       (when-let [line (read-line)]
         (when-let [response (handle nb writer session line)]
           (println (json/generate-string response))
           (flush))
-        (recur)))))
+        (recur)))
+    (k/close! nb)))

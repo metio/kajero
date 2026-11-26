@@ -19,8 +19,15 @@
    naming sessions. Daily rows older than `retention-days` fold into one
    total per entry, so the counts stay bounded by the number of entries.
 
-   Recording never fails a read: a count that can not be written is logged
-   on stderr and dropped, and the search or read answers as it would have.
+   A count is added in memory, on the thread of the search or read, and
+   written by `flush!`: every `flush-interval-ms` once `start-flushing!`
+   runs, and when the recorder is closed. Writing the counts replaces the
+   whole usage file of a flat-file notebook, which grows with the entries
+   and the retained days, so it stays off the request path.
+
+   Recording never fails a read. A flush that can not be written is logged
+   on stderr and keeps its counts for the next flush, up to `max-pending`
+   counts held in memory; a count beyond that is logged and dropped.
    Reading the counts for a report does fail, so a report never mistakes an
    unreadable usage file for one in which nothing was returned."
   (:require [clojure.edn :as edn]
@@ -32,7 +39,8 @@
            (java.security SecureRandom)
            (java.sql Connection PreparedStatement ResultSet)
            (java.time Duration Instant LocalDate ZoneOffset)
-           (java.util HexFormat)))
+           (java.util HexFormat)
+           (java.util.concurrent Executors ScheduledExecutorService ScheduledFuture ThreadFactory TimeUnit)))
 
 (def retention-days
   "Daily rows older than this many days fold into one total per entry."
@@ -50,6 +58,14 @@
 (def max-returned
   "The most entries one session remembers as returned."
   10000)
+
+(def flush-interval-ms
+  "How often a flushing recorder writes the counts it holds."
+  30000)
+
+(def max-pending
+  "The most counts, one per entry and day, held in memory between flushes."
+  100000)
 
 (def ^:private counters [:returned :opened :opened-after-return])
 
@@ -265,9 +281,10 @@
 ;; ---------------------------------------------------------------- recorder
 
 (defn recorder
-  "Counts into `log`, with the sessions of this server in memory."
+  "Counts into `log`, with the sessions of this server and the counts not
+   yet flushed in memory."
   [log]
-  {:log log :sessions (atom {}) :folded-day (atom nil)})
+  {:log log :sessions (atom {}) :folded-day (atom nil) :pending (atom {}) :flusher (atom nil)})
 
 (defn- expired?
   [{:keys [touched]} ^Instant at]
@@ -319,21 +336,73 @@
   (boolean (when-let [s (and session (get @sessions session))]
              (and (not (expired? s at)) (contains? (:returned s) entry)))))
 
-(defn- count!
-  [{:keys [log folded-day]} at counts]
-  (let [d (day at)]
-    (when-not (= d @folded-day)
-      (fold! log (days-before d retention-days))
-      (reset! folded-day d))
-    (add! log d counts)))
+(defn- held-counts
+  "How many counts, one per entry and day, `pending` holds."
+  [pending]
+  (reduce + 0 (map count (vals pending))))
 
-(defn- guarded
-  "Calls `f`; a failure is logged and answers nil instead of throwing."
-  [what f]
-  (try (f)
-       (catch Exception e
-         (log! "kajero: usage not recorded for" what "-" (or (ex-message e) (.getName (class e))))
-         nil)))
+(defn- merge-pending
+  "`pending`, {day {entry counts}}, with `counts` of day `d` added."
+  [pending d counts]
+  (update pending d #(merge-with plus % counts)))
+
+(defn- count!
+  "Adds `counts` to the counts of `at`'s day held in memory, or logs and
+   drops them when that would hold more than max-pending."
+  [{:keys [pending]} what at counts]
+  (let [d (day at)
+        [before after] (swap-vals! pending
+                                   (fn [p]
+                                     (let [merged (merge-pending p d counts)]
+                                       (if (< (long max-pending) (long (held-counts merged))) p merged))))]
+    (when (identical? before after)
+      (log! "kajero: usage not recorded for" what "- the counts not yet flushed are at their bound"))))
+
+(defn flush!
+  "Writes the counts held in memory to the log, day by day. A day that can
+   not be written is logged and kept for the next flush. nil."
+  [{:keys [log folded-day pending]}]
+  (when pending
+    (locking pending
+      (let [[taken] (swap-vals! pending (constantly {}))]
+        (doseq [[d counts] (sort-by key taken)]
+          (try
+            (when-not (= d @folded-day)
+              (fold! log (days-before d retention-days))
+              (reset! folded-day d))
+            (add! log d counts)
+            (catch Exception e
+              (swap! pending merge-pending d counts)
+              (log! "kajero: usage not recorded for" (count counts) (if (= 1 (count counts)) "entry" "entries")
+                    "of" d "- kept for the next flush -"
+                    (or (ex-message e) (.getName (class e)))))))))
+    nil))
+
+(defonce ^:private scheduler
+  (delay (Executors/newSingleThreadScheduledExecutor
+          (reify ThreadFactory
+            (newThread [_ r] (doto (Thread. ^Runnable r "kajero-usage-flush") (.setDaemon true)))))))
+
+(defn start-flushing!
+  "Flushes the recorder every `interval-ms` (flush-interval-ms by default)
+   on a daemon thread, until close!. Returns the recorder."
+  [rec & [interval-ms]]
+  (let [ms (long (or interval-ms flush-interval-ms))
+        task (fn []
+               ;; an exception would end the schedule, and flush! logs its own failures
+               (try (flush! rec)
+                    (catch Exception e (log! "kajero: usage flush failed -" (ex-message e)))))]
+    (some-> ^ScheduledFuture (deref (:flusher rec)) (.cancel false))
+    (reset! (:flusher rec)
+            (.scheduleWithFixedDelay ^ScheduledExecutorService @scheduler ^Runnable task ms ms TimeUnit/MILLISECONDS))
+    rec))
+
+(defn close!
+  "Stops the periodic flush and writes what is still held. nil."
+  [rec]
+  (when rec
+    (some-> ^ScheduledFuture (deref (:flusher rec)) (.cancel false))
+    (flush! rec)))
 
 (defn searched!
   "Counts that a search returned `entries`, and remembers them for
@@ -341,7 +410,7 @@
   [rec session entries at]
   (when (and rec (seq entries))
     (track! rec session entries at)
-    (guarded "a search" #(count! rec at (zipmap entries (repeat {:returned 1}))))
+    (count! rec "a search" at (zipmap entries (repeat {:returned 1})))
     nil))
 
 (defn opened!
@@ -350,20 +419,34 @@
   [rec session entry at]
   (when (and rec entry)
     (let [after? (returned-in? rec session entry at)]
-      (guarded "a read" #(count! rec at {entry (cond-> {:opened 1} after? (assoc :opened-after-return 1))}))
+      (count! rec "a read" at {entry (cond-> {:opened 1} after? (assoc :opened-after-return 1))})
       nil)))
 
+(defn- with-pending
+  "The counts `c` with the counts held in memory, `pending`, added."
+  [c pending]
+  (reduce-kv (fn [acc d counts]
+               (reduce-kv (fn [acc entry cs] (update-in acc [:days entry d] plus cs))
+                          (update acc :since #(if (or (nil? %) (neg? (compare d %))) d %))
+                          counts))
+             c
+             pending))
+
 (defn counts
-  "Every count of the recorder - see `snapshot` - or the empty counts when
-   there is no recorder. Throws ex-info {:reason :kajero/usage-unreadable}
-   when the counts can not be read."
+  "Every count of the recorder - see `snapshot` - including those not yet
+   flushed, or the empty counts when there is no recorder. Throws ex-info
+   {:reason :kajero/usage-unreadable} when the counts can not be read."
   [rec]
   (if-not rec
     empty-counts
-    (try (snapshot (:log rec))
-         (catch Exception e
-           (throw (ex-info (str "the usage counts can not be read: " (ex-message e))
-                           {:reason :kajero/usage-unreadable} e))))))
+    ;; a flush holds this lock while it moves counts from memory to the
+    ;; log, so no count is read from both or from neither
+    (let [{:keys [pending log]} rec]
+      (locking pending
+        (try (with-pending (snapshot log) @pending)
+             (catch Exception e
+               (throw (ex-info (str "the usage counts can not be read: " (ex-message e))
+                               {:reason :kajero/usage-unreadable} e))))))))
 
 (defn of-entry
   "The counts of one entry, for a selector: {:since :folded-through :days
