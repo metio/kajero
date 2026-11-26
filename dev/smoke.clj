@@ -150,7 +150,7 @@
    manifest. Returns the skills/list result."
   [transport init call skills-dir signer]
   (check! (contains? (get-in init [:capabilities :extensions]) :io.modelcontextprotocol/skills)
-          transport "initialize declares the skills extension")
+          transport "the server declares the skills extension")
   (check! (str/includes? (str (:instructions init)) "skill://kajero/SKILL.md")
           transport "the server instructions name skill://kajero/SKILL.md")
   (let [listed (:result (call {:jsonrpc "2.0" :id 101 :method "skills/list" :params {}}))
