@@ -8,11 +8,11 @@
    hash and a signature that verifies wherever the bytes are read. The
    text is printed by kajero.print under fixed print settings, so the
    bytes do not depend on the thread or process that prints them."
-  (:require [clojure.string :as str]
-            [kajero.print :as kp]
+  (:require [kajero.print :as kp]
             [tik.sign :as sign])
   (:import (java.nio.charset StandardCharsets)
-           (java.security MessageDigest)))
+           (java.security MessageDigest)
+           (java.util HexFormat)))
 
 (def signature-namespace
   "The ssh-keygen -Y namespace of kajero signatures, so a kajero signature
@@ -41,17 +41,29 @@
   "The bytes the record printed as on a thread with *print-namespace-maps*
    true, as the CLI and the stdio MCP server signed them before the print
    settings were fixed; nil when they equal the canonical bytes, which is
-   every record without a map whose keys share one namespace."
-  ^bytes [record]
-  (let [legacy (render (assoc kp/settings :namespace-maps true) record)]
-    (when-not (java.util.Arrays/equals legacy (->bytes record))
-      legacy)))
+   every record without a map whose keys share one namespace. `canonical`
+   is the record's canonical bytes when the caller has them already."
+  (^bytes [record] (legacy-bytes record (->bytes record)))
+  (^bytes [record ^bytes canonical]
+   (let [legacy (render (assoc kp/settings :namespace-maps true) record)]
+     (when-not (java.util.Arrays/equals legacy canonical)
+       legacy))))
+
+(defn sha256
+  "The sha256 of `b`, as `sha256-<hex>`."
+  [^bytes b]
+  (str "sha256-" (.formatHex (HexFormat/of) (.digest (MessageDigest/getInstance "SHA-256") b))))
+
+(defn bytes+hash
+  "[canonical bytes, hash] of the record, rendering it once."
+  [record]
+  (let [b (->bytes record)]
+    [b (sha256 b)]))
 
 (defn hash-of
   "The sha256 of the record's canonical bytes, as `sha256-<hex>`."
   [record]
-  (let [digest (.digest (MessageDigest/getInstance "SHA-256") (->bytes record))]
-    (str "sha256-" (str/join (map #(format "%02x" %) digest)))))
+  (sha256 (->bytes record)))
 
 (defn sign
   "The detached signature of the record by the key in `key-file`."

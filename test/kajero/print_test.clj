@@ -3,6 +3,7 @@
 (ns kajero.print-test
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
             [kajero.print :as kp]
@@ -84,3 +85,17 @@
                                                  :data {:a/x 1 :a/y 2}}))]
     (is (= revision (binding [*print-namespace-maps* false] (:revision (k/entry nb entry)))))
     (is (= revision (binding [*print-namespace-maps* true] (:revision (k/entry nb entry)))))))
+
+(deftest bytes-and-hash-come-from-one-rendering
+  (doseq [r [namespaced nested (dissoc namespaced :data)]]
+    (let [[b h] (record/bytes+hash r)
+          digest (.digest (java.security.MessageDigest/getInstance "SHA-256") (record/->bytes r))]
+      (is (java.util.Arrays/equals ^bytes b (record/->bytes r)))
+      (is (= h (record/hash-of r)))
+      (is (= h (str "sha256-" (str/join (map #(format "%02x" %) digest))))
+          "the hex is lower case, two digits per byte"))))
+
+(deftest legacy-bytes-take-the-canonical-bytes-the-caller-has
+  (is (java.util.Arrays/equals ^bytes (record/legacy-bytes namespaced)
+                               ^bytes (record/legacy-bytes namespaced (record/->bytes namespaced))))
+  (is (nil? (record/legacy-bytes (dissoc namespaced :data) (record/->bytes (dissoc namespaced :data))))))

@@ -169,3 +169,81 @@
       (java.nio.file.Files/setLastModifiedTime (.toPath f) before)
       (is (= size (.length f)) "the replacement line has the same length")
       (is (= :bad-signature (state v r))))))
+
+(defn- slow-counting
+  "A verifier on `actors` whose checks take a while and are counted per
+   message and signature, so concurrent callers overlap."
+  [actors]
+  (let [calls (atom {})]
+    [(verify/verifier actors {:check (fn [reg ^bytes message ^bytes sig actor]
+                                       (swap! calls update [(vec message) (vec sig)] (fnil inc 0))
+                                       (Thread/sleep 20)
+                                       (verify/check-signature reg message sig actor))})
+     calls]))
+
+(deftest concurrent-verdicts-check-each-record-once
+  (when-let [{:keys [key actors]} (keys/keypair "claude")]
+    (let [[v calls] (slow-counting actors)
+          records (vec (for [i (range 4)] (signed key (assoc rec :seq i :data {:n i}))))
+          start (java.util.concurrent.CountDownLatch. 1)
+          pool (java.util.concurrent.Executors/newFixedThreadPool 16)
+          futures (doall (for [_ (range 16) r records]
+                           (.submit pool ^Callable (fn [] (.await start) (state v r)))))]
+      (.countDown start)
+      (is (every? #(= :verified (.get ^java.util.concurrent.Future %)) futures))
+      (.shutdown pool)
+      (is (= 4 (count @calls)) "every record was checked")
+      (is (every? #{1} (vals @calls)) "and each exactly once"))))
+
+(deftest a-registry-read-once-per-request-still-sees-the-file-change-between-requests
+  (when-let [{:keys [key actors]} (keys/keypair "claude")]
+    (let [v (verify/verifier actors)
+          r (signed key rec)
+          f (java.io.File. ^String actors)
+          request (fn [] (let [reg (verify/registry v)] (:signature (verify/verdict v reg r nil))))]
+      (is (= :verified (request)))
+      (testing "a same-size rewrite with the modification time restored"
+        (let [before (java.nio.file.Files/getLastModifiedTime (.toPath f) (make-array java.nio.file.LinkOption 0))
+              size (.length f)]
+          (keys/write-actors! actors [["claude" (keys/key-file)]])
+          (java.nio.file.Files/setLastModifiedTime (.toPath f) before)
+          (is (= size (.length f)))
+          (is (= :bad-signature (request)))))
+      (testing "a removed actor"
+        (keys/write-actors! actors [["claude" key]])
+        (is (= :verified (request)))
+        (keys/write-actors! actors [["seb" (keys/key-file)]])
+        (is (= :bad-signature (request)))))))
+
+(deftest a-legacy-signature-verifies-on-every-path
+  (when-let [{:keys [key actors]} (keys/keypair "claude")]
+    (let [r (legacy-signed key rec)]
+      (testing "with the hash given"
+        (is (= {:signature :verified :form :legacy}
+               (verify/verdict (verify/verifier actors) r (record/hash-of r)))))
+      (testing "with the registry of a request"
+        (let [v (verify/verifier actors)]
+          (is (= {:signature :verified :form :legacy} (verify/verdict v (verify/registry v) r nil)))))
+      (testing "after a parallel warm-up"
+        (let [[v calls] (counting actors)]
+          (is (= 1 (verify/warm! v [r])))
+          (is (= 2 @calls) "canonical, then legacy")
+          (is (= {:signature :verified :form :legacy} (verify/verdict v r)))
+          (is (= 2 @calls)))))))
+
+(deftest a-parallel-warm-up-gives-the-verdicts-of-serial-judgement
+  (when-let [{:keys [key actors]} (keys/keypair "claude")]
+    (let [foreign (keys/key-file)
+          records (vec (for [i (range 60)
+                             :let [r (assoc rec :seq i :data (if (#{0 1} (mod i 5)) {:a/x i :a/y i} {:n i}))]]
+                         (case (mod i 5)
+                           0 (signed key r)
+                           1 (legacy-signed key r)
+                           2 r
+                           3 (signed foreign r)
+                           4 (assoc (signed key r) :body "changed"))))
+          serial (let [v (verify/verifier actors)] (mapv #(verify/verdict v %) records))
+          warmed (verify/verifier actors)]
+      (is (= 60 (verify/warm! warmed records)))
+      (is (= serial (mapv #(verify/verdict warmed %) records)))
+      (is (= #{:verified :unsigned :bad-signature} (set (map :signature serial)))))))
