@@ -23,6 +23,7 @@
            (java.nio.charset StandardCharsets)
            (java.security MessageDigest SecureRandom)
            (java.util HexFormat)
+           (java.util.concurrent Executors)
            (org.commonmark.ext.gfm.tables TablesExtension)
            (org.commonmark.parser Parser)
            (org.commonmark.renderer.html HtmlRenderer)))
@@ -715,6 +716,10 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
   ^HttpServer [nb writer port & [mcp pages?]]
   (let [token (.formatHex (HexFormat/of) (let [b (byte-array 24)] (.nextBytes (SecureRandom.) b) b))
         server (HttpServer/create (InetSocketAddress. "127.0.0.1" (int port)) 0)]
+    ;; One virtual thread per request, so a slow request - a full search,
+    ;; a page citing many tik tickets - never holds up the others. The
+    ;; notebook is safe to share: see kajero.index and kajero.store.
+    (.setExecutor server (Executors/newVirtualThreadPerTaskExecutor))
     (.createContext server "/"
                     (reify HttpHandler
                       (handle [_ ex]

@@ -293,3 +293,32 @@
           (is (not (str/includes? body "verified entry")))))
       (testing "the history marks the record"
         (is (str/includes? (page bad) " · bad signature"))))))
+
+(defn- http-get [port path]
+  (let [response (.send (java.net.http.HttpClient/newHttpClient)
+                        (.build (java.net.http.HttpRequest/newBuilder (java.net.URI. (str "http://127.0.0.1:" port path))))
+                        (java.net.http.HttpResponse$BodyHandlers/ofString))]
+    {:status (.statusCode response) :body (.body response)}))
+
+(deftest a-slow-request-does-not-hold-up-a-fast-one
+  (let [ticket "5084203b-b89a-479e-9075-02fdf34806d9"
+        entered (java.util.concurrent.CountDownLatch. 1)
+        release (java.util.concurrent.CountDownLatch. 1)
+        nb (k/notebook {:path (str (temp/temp-dir) "/notes.db")
+                        ;; the entry page waits in its ticket lookup until the test releases it
+                        :tik-status (fn [id]
+                                      (.countDown entered)
+                                      (.await release 30 java.util.concurrent.TimeUnit/SECONDS)
+                                      {:ticket id :title "slow" :current ["proven"]})})
+        {:keys [entry]} (k/write! (assoc nb :tik-status nil)
+                                  {:title "cites a slow ticket" :labels {"kind" "fact"} :actor "claude"
+                                   :evidence [(str "tik:" ticket)]})]
+    (with-server [port nb]
+      (let [slow (future (http-get port (str "/e/" entry)))]
+        (is (.await entered 30 java.util.concurrent.TimeUnit/SECONDS) "the slow request is running")
+        (let [fast (deref (future (http-get port "/labels")) 10000 ::blocked)]
+          (is (not= ::blocked fast) "the fast request answered while the slow one waits")
+          (is (= 200 (:status fast)))
+          (is (not (realized? slow)) "the slow request is still waiting"))
+        (.countDown release)
+        (is (= 200 (:status (deref slow 30000 ::timeout))))))))
