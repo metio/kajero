@@ -187,6 +187,57 @@ server - appear within a second, when a read finds the index older than
 that and re-lists the store. A record file read before the `.sig` beside it
 was written is read again once the signature appears.
 
+## Signed checkpoints
+
+A server can sign checkpoints of the notebook: a Merkle tree over every
+record, earlier revisions included, whose leaves are each record's hash
+computed from its canonical bytes, the sha256 of its signature, its
+verdict, its kind and the entries it belongs to. The tree is a trie on the
+record hashes whose shape depends only on the set of records, so two copies
+holding the same records have the same tree whichever order the records
+arrived in. A checkpoint signs `sha256(format, actors-file digest, tree)`.
+
+At start, the server takes the verdicts of the latest valid checkpoint for
+every record it covers with the same hash and signature under the same
+actors file, and judges only the records added or changed since, in
+parallel. A record edited in place has another hash and is judged again. A
+changed actors file invalidates every checkpoint's verdicts. A checkpoint
+whose signature, format or digests do not hold is ignored whole, with a
+warning, and nothing of it is used.
+
+A record the latest checkpoint held that is gone from the store is reported
+as missing: on the home page, by `kajero checkpoint`, by the MCP tool
+`kajero_checkpoint` and by the selector term `missing-records`. A notebook
+only grows, so a missing record was deleted or edited in place. The report
+is a warning and the notebook keeps serving. Each new checkpoint carries the
+missing records forward until they are back; to accept a loss, delete the
+checkpoint directory, and the next start judges every record and signs a
+fresh checkpoint.
+
+| Variable | Meaning |
+| --- | --- |
+| `KAJERO_CHECKPOINT_KEY` | the private key that signs checkpoints, used by `serve` and `mcp` only |
+| `KAJERO_CHECKPOINT_PUBKEY` | the pinned public key, as its line or a file holding it; defaults to the signing key's own |
+| `KAJERO_CHECKPOINT_DIR` | where checkpoints live, by default `<KAJERO_DIR>.checkpoints` or `<KAJERO_DB>.checkpoints` |
+| `KAJERO_CHECKPOINT_INTERVAL` | seconds between checkpoints, 600 |
+| `KAJERO_CHECKPOINT_WRITES` | writes that cause a checkpoint, 64 |
+| `KAJERO_CHECKPOINT_KEEP` | how many checkpoints are kept, 8 |
+
+The checkpoint key must be a dedicated ed25519 key that signs no records: a
+key the actors file grants is refused, and checkpoint signatures use their
+own namespace, `kajero-checkpoint`. The server signs a checkpoint at start,
+every interval, after the given number of writes and when it stops; a
+notebook whose root did not change signs none. Checkpoints sit beside the
+store, never in it, so neither `git` nor a sync of the store carries them.
+The command line reads checkpoints with `KAJERO_CHECKPOINT_PUBKEY` set, and
+never signs one.
+
+```sh
+ssh-keygen -t ed25519 -N '' -C kajero-checkpoint -f ~/.config/kajero/checkpoint_ed25519
+export KAJERO_CHECKPOINT_KEY=~/.config/kajero/checkpoint_ed25519
+export KAJERO_CHECKPOINT_PUBKEY=~/.config/kajero/checkpoint_ed25519.pub
+```
+
 ## Selectors
 
 Selectors use the grammar of tik's `--where`: whitespace-separated terms, all
@@ -210,6 +261,7 @@ label:system=calico label:kind not disputed ~apiservices
 | `unverified` | whose current revision is unsigned or carries a bad signature |
 | `retired` | that somebody retired |
 | `missed` | whose current revision a search missed: they need better titles or labels |
+| `missing-records` | with a record that the latest signed checkpoint held and the store no longer does |
 | `coverage` | labelled `kind=coverage`: the records of questions asked |
 | `never-returned` | that no search returned since the counting began |
 | `never-returned=YYYY-MM-DD` | that no search returned on that day or later |
@@ -343,6 +395,7 @@ echo '[{:entry "e8da4903" :outcome "held" :evidence ["book dns"]}]' | bb kajero 
 bb kajero revise <id> --base <revision> --body -
 bb kajero labels
 bb kajero usage
+bb kajero checkpoint
 ```
 
 `observe-many` records one observation per item and judges each on its own:
