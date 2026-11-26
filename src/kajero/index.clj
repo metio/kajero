@@ -24,9 +24,22 @@
 
    Given a function that turns records into Merkle leaves, the index also
    keeps a kajero.merkle tree over every record it has read, earlier
-   revisions included, and adds each new record's leaf in the same swap
-   that adds the record and raises the generation. The leaves are computed
-   before the swap, so a swap that retries never judges a signature twice."
+   revisions included. Computing a leaf judges a signature, so loading the
+   index computes none: the tree starts out building, and every record the
+   index takes in while it builds is queued in the same swap that adds the
+   record. build-tree! computes the leaves of the queue until it is empty
+   and marks the tree ready in the swap that finds it empty, so no record
+   the index holds is ever left out of a ready tree. Once the tree is ready,
+   a new record's leaf is added in the same swap that adds the record and
+   raises the generation. The leaves are computed before the swap, so a
+   swap that retries never judges a signature twice; a record whose leaf
+   was not computed because the tree was still building when the writer
+   looked has its leaf computed and added right after its swap.
+
+   A leaf replaces the leaf of the same hash, except that a copy read
+   without its signature never replaces the signed one, as the index keeps
+   the signed copy of a record. Adding a record twice therefore changes
+   nothing, and the order the leaves arrive in does not change the tree."
   (:require [kajero.derived :as derived]
             [kajero.merkle :as merkle]
             [kajero.store :as store])
@@ -115,6 +128,13 @@
     :link (add-link state rec)
     :page (add-page state rec)))
 
+(defn- merge-leaves
+  "`tree` with `leaves` in it, except a leaf without a signature where the
+   tree holds the signed copy of the same record: the tree keeps the copy
+   the index keeps (see signed-copy?), whichever was read last."
+  [tree leaves]
+  (merkle/add-all tree (remove #(and (nil? (:sig %)) (:sig (merkle/lookup tree (:hash %)))) leaves)))
+
 (defn- add-leaves
   "`state` with the leaves `computed` - {:actors digest :leaves [...]}, see
    `indexed` - in its tree, remembering the actors file they were judged
@@ -123,9 +143,7 @@
   (cond-> state
     computed (update :tree (fn [{:keys [merkle actors] :as t}]
                              (assoc t
-                                    :merkle (if (nil? merkle)
-                                              (merkle/build (:leaves computed))
-                                              (merkle/add-all merkle (:leaves computed)))
+                                    :merkle (merge-leaves (or merkle merkle/empty-tree) (:leaves computed))
                                     :actors (conj (or actors #{}) (:actors computed)))))))
 
 (defn- leaves-of
@@ -135,15 +153,55 @@
   (when (and leaves (seq records))
     (leaves records)))
 
+(defn- tree-ready? [s] (boolean (get-in s [:tree :ready?])))
+
+(defn- leaves-when-ready
+  "The leaves of `records` when the index keeps a ready tree, else nil:
+   while the tree builds, records are queued instead. ::failed when the
+   leaf function threw."
+  [{:keys [state] :as idx} records]
+  (when (tree-ready? @state)
+    (try (leaves-of idx records)
+         (catch Exception e
+           (binding [*out* *err*]
+             (println "kajero: the Merkle leaves of new records not computed -" (ex-message e)))
+           ::failed))))
+
+(defn- into-tree
+  "`s` with `records` in its tree: queued while the tree builds, their
+   leaves `computed` added once it is ready. A ready tree without computed
+   leaves is left as it is, and the caller adds them after its swap."
+  [s records computed]
+  (cond
+    (or (nil? (:tree s)) (empty? records)) s
+    (not (tree-ready? s)) (update-in s [:tree :pending] into records)
+    (= ::failed computed) (assoc-in s [:tree :stale?] true)
+    computed (add-leaves s computed)
+    :else s))
+
+(defn- add-late-leaves!
+  "Adds the leaves of `records` to a tree that became ready between the
+   writer's look at it and its swap, so they were neither computed nor
+   queued. `after` is the state that swap left."
+  [{:keys [state] :as idx} records computed after]
+  (when (and (:tree after) (seq records) (nil? computed) (tree-ready? after))
+    (let [late (try (leaves-of idx records)
+                    (catch Exception e
+                      (binding [*out* *err*]
+                        (println "kajero: the Merkle leaves of new records not computed -" (ex-message e)))
+                      ::failed))]
+      (swap! state #(if (= ::failed late) (assoc-in % [:tree :stale?] true) (add-leaves % late))))))
+
 (defn- refresh-held!
   "Reads the store's changes into the index; the caller holds the lock."
   [{:keys [inner state] :as idx}]
   (let [{:keys [cursor records]} (store/changes inner (:cursor @state))
-        computed (leaves-of idx records)]
-    (swap! state (fn [s] (-> (reduce add-record s records)
-                             (add-leaves computed)
-                             (cond-> (seq records) (update :generation inc))
-                             (assoc :cursor cursor :refreshed (System/nanoTime)))))
+        computed (leaves-when-ready idx records)
+        [_ after] (swap-vals! state (fn [s] (-> (reduce add-record s records)
+                                                (into-tree records computed)
+                                                (cond-> (seq records) (update :generation inc))
+                                                (assoc :cursor cursor :refreshed (System/nanoTime)))))]
+    (add-late-leaves! idx records computed after)
     nil))
 
 (defn refresh!
@@ -169,7 +227,7 @@
   (fresh! idx)
   @(:state idx))
 
-(defrecord Indexed [inner state lock refresh-ms on-append leaves]
+(defrecord Indexed [inner state lock refresh-ms on-append leaves ^ReentrantLock tree-lock]
   store/Store
   (revisions [_ entry] (store/revisions inner entry))
   (observations [this entry] (get-in (held this) [:entries entry :observations] []))
@@ -183,16 +241,13 @@
                      (refresh! this))
                    (throw e)))]
       (let [held (assoc rec :sig sig)
-            computed (try (leaves-of this [[kind held]])
-                          (catch Exception e
-                            (binding [*out* *err*]
-                              (println "kajero: the Merkle leaf of a written record not computed -" (ex-message e)))
-                            ::failed))]
-        (swap! state #(-> %
-                          (add-record [kind held])
-                          (cond-> (= ::failed computed) (assoc-in [:tree :stale?] true)
-                                  (not= ::failed computed) (add-leaves computed))
-                          (update :generation inc)))
+            records [[kind held]]
+            computed (leaves-when-ready this records)
+            [_ after] (swap-vals! state #(-> %
+                                             (add-record [kind held])
+                                             (into-tree records computed)
+                                             (update :generation inc)))]
+        (add-late-leaves! this records computed after)
         (when on-append
           ;; the record has landed, so a failure here must not report the
           ;; write as failed; what it would have computed is computed on read
@@ -224,37 +279,82 @@
    :leaves, a function of records [[kind record] ...] returning {:actors
    digest :leaves [leaf ...]} - one kajero.merkle leaf per record, judged
    under the actors file of that digest - makes the index keep a Merkle
-   tree over every record; without it the index keeps none."
+   tree over every record; without it the index keeps none. The tree is
+   building until build-tree! has run: loading queues the records instead
+   of judging them."
   [inner & [{:keys [refresh-ms on-append leaves]}]]
   (doto (->Indexed inner
-                   (atom (cond-> empty-state leaves (assoc :tree {:merkle merkle/empty-tree :actors #{}})))
-                   (ReentrantLock.) (long (or refresh-ms default-refresh-ms)) on-append leaves)
+                   (atom (cond-> empty-state
+                           leaves (assoc :tree {:merkle merkle/empty-tree :actors #{} :ready? false :pending []})))
+                   (ReentrantLock.) (long (or refresh-ms default-refresh-ms)) on-append leaves (ReentrantLock.))
     refresh!))
 
 (defn tree
-  "{:merkle tree :actors #{digest} :stale? bool} of the index: the Merkle
-   tree over every record it read, the digests of the actors files its
-   verdicts were judged under, and whether a leaf failed to be computed;
-   nil when the index keeps no tree or `s` is no index."
+  "{:merkle tree :actors #{digest} :stale? bool :ready? bool} of the index:
+   the Merkle tree over every record it read, the digests of the actors
+   files its verdicts were judged under, whether a leaf failed to be
+   computed, and whether the tree is complete. A tree that is not :ready?
+   lacks the records still queued, so nothing may be judged from it but
+   that it is building; :failed names why the last build failed. nil when
+   the index keeps no tree or `s` is no index."
   [s]
   (when (instance? Indexed s)
-    (:tree (held s))))
+    (dissoc (:tree (held s)) :pending)))
+
+(defn- drain!
+  "Adds the leaves of every queued record to `acc` until the queue is
+   empty, and in the swap that finds it empty makes `acc` the index's
+   ready tree."
+  [{:keys [state] :as idx} acc]
+  (loop [acc acc]
+    (let [[before] (swap-vals! state
+                               (fn [s]
+                                 (if (empty? (get-in s [:tree :pending]))
+                                   (-> s
+                                       (assoc :tree (assoc acc :ready? true :pending []))
+                                       (update :generation inc))
+                                   (assoc-in s [:tree :pending] []))))
+          queued (get-in before [:tree :pending])]
+      (if (empty? queued)
+        acc
+        (let [{:keys [actors leaves]} (leaves-of idx queued)]
+          (recur (-> acc
+                     (update :merkle merge-leaves leaves)
+                     (update :actors conj actors))))))))
+
+(defn build-tree!
+  "Completes the index's tree: computes the leaves of every record queued
+   while it was building, and marks it ready. With :reread? the tree is
+   built again from every record of the store, each judged now under the
+   actors file as it is now - for an actors file that changed, which
+   changes verdicts; the tree reads as building meanwhile. One build runs
+   at a time. A build that throws leaves the tree building, with :failed
+   naming why, and the next build starts over from the store. Returns the
+   tree as `tree` answers it, or nil when the index keeps none."
+  [{:keys [inner state ^ReentrantLock tree-lock] :as idx} & [{:keys [reread?]}]]
+  (when (:leaves idx)
+    (.lock tree-lock)
+    (try
+      (let [reread? (or reread? (some? (get-in @state [:tree :failed])))
+            _ (when reread?
+                (swap! state update :tree assoc :ready? false :pending []))
+            start (if reread?
+                    (let [computed (leaves-of idx (:records (store/changes inner nil)))]
+                      {:merkle (merge-leaves merkle/empty-tree (:leaves computed))
+                       :actors (if computed #{(:actors computed)} #{})})
+                    {:merkle merkle/empty-tree :actors #{}})]
+        (drain! idx start)
+        (tree idx))
+      (catch Exception e
+        (swap! state update :tree assoc :failed (or (ex-message e) (.getName (class e))))
+        (throw e))
+      (finally (.unlock tree-lock)))))
 
 (defn rebuild-tree!
-  "Reads every record of the store again and replaces the tree with one
-   whose leaves are all judged now, under the actors file as it is now.
-   For an actors file that changed, which changes verdicts. Returns the
-   tree as `tree` answers it."
-  [{:keys [inner state ^ReentrantLock lock] :as idx}]
-  (when (:leaves idx)
-    (.lock lock)
-    (try
-      (let [{:keys [records]} (store/changes inner nil)
-            computed (leaves-of idx records)
-            t {:merkle (merkle/build (:leaves computed))
-               :actors (if computed #{(:actors computed)} #{})}]
-        (:tree (swap! state #(-> % (assoc :tree t) (update :generation inc)))))
-      (finally (.unlock lock)))))
+  "Builds the tree again from every record of the store - see
+   build-tree! with :reread?."
+  [idx]
+  (build-tree! idx {:reread? true}))
 
 (defn inner
   "The store behind `s`, or `s` itself when it has no index."

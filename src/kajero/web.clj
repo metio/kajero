@@ -296,20 +296,28 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
 ;; ------------------------------------------------------------------ pages
 
 (defn- checkpoint-notice
-  "The home page's account of the checkpoints: an alert naming the records
-   of the latest checkpoint that are gone and every warning about a
-   checkpoint, else one line with the latest checkpoint's root and age;
-   nothing when checkpoints are off."
+  "The home page's account of the checkpoints: a line saying the
+   checkpoint is still being compared while the notebook warms up, an
+   alert naming the records of the latest checkpoint that are gone and
+   every warning about a checkpoint, else one line with the latest
+   checkpoint's root and age; nothing when checkpoints are off."
   [nb]
-  (let [{:keys [enabled? warnings latest covered records missing missing-records]} (k/checkpoint-status nb)]
+  (let [{:keys [enabled? warnings latest covered records missing missing-records warm-up]} (k/checkpoint-status nb)
+        gone (if (number? missing) (long missing) 0)]
     (when (or enabled? (seq warnings))
       [:div
-       (when (or (pos? (long (or missing 0))) (seq warnings))
+       (case (:state warm-up)
+         :warming [:p.meta "Checkpoints: warming up. The records are not compared with the latest checkpoint yet, "
+                   "so missing records are not known; signatures are judged as each page asks for them."]
+         :failed [:section.alert [:h2 "Checkpoints"]
+                  [:p (str "The checkpoint warm-up failed, so missing records are not known: " (:error warm-up))]]
+         nil)
+       (when (or (pos? gone) (seq warnings))
          [:section.alert
           [:h2 "Checkpoints"]
-          (when (pos? (long (or missing 0)))
+          (when (pos? gone)
             [:div
-             [:p (str missing " records the latest checkpoint held are missing from the store. "
+             [:p (str gone " records the latest checkpoint held are missing from the store. "
                       "A notebook only grows, so a record was deleted or edited in place. ")
               [:a {:href (view-href "missing-records")} "Entries with missing records"]]
              [:ul (for [{:keys [hash kind entries]} missing-records]
@@ -317,7 +325,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                      (for [e entries] [:a {:href (str "/e/" (enc e))} e " "])])]])
           (when (seq warnings)
             [:ul (for [w warnings] [:li w])])])
-       (when latest
+       (when (and latest (number? missing))
          [:p.meta (str "Checkpoint " (subs (:root latest) 0 19) "… signed " (when-str (:at latest))
                        ", covering " covered " of " records " records.")])])))
 
@@ -548,6 +556,12 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
 
       :else nil)))
 
+(defn- refusal-status
+  "503 for a question the notebook can answer only once it has warmed up,
+   else 400."
+  [e]
+  (if (= :kajero/warming-up (:reason (ex-data e))) 503 400))
+
 (defn- edn-response [status value]
   {:status status
    :headers {"Content-Type" "application/edn; charset=utf-8"}
@@ -567,7 +581,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                  hid (let [h (k/history nb (decode hid))] (when (seq h) h)))
                (edn-response 200))
       (catch clojure.lang.ExceptionInfo e
-        (edn-response 400 {:refused (some-> (:reason (ex-data e)) name) :message (ex-message e)})))))
+        (edn-response (refusal-status e) {:refused (some-> (:reason (ex-data e)) name) :message (ex-message e)})))))
 
 (defn respond
   "The response to one request: {:status :headers :body}, or nil for 404.
@@ -592,9 +606,9 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                      page-name (saved-page nb page-name))
                    (hash-map :status 200 :body)))))
     (catch clojure.lang.ExceptionInfo e
-      (problem 400 (str (ex-message e)
-                        (when-let [c (:current (ex-data e))]
-                          (str " - someone revised it meanwhile; the current revision is " c)))))))
+      (problem (refusal-status e) (str (ex-message e)
+                                       (when-let [c (:current (ex-data e))]
+                                         (str " - someone revised it meanwhile; the current revision is " c)))))))
 
 (defn- own-origins [port]
   #{(str "http://127.0.0.1:" port) (str "http://localhost:" port)})
@@ -786,7 +800,10 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                               :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
                               :actors (env "KAJERO_ACTORS")
                               :tik-root (env "KAJERO_TIK_ROOT")
-                              :checkpoint (checkpoint/settings env store)))
+                              :checkpoint (checkpoint/settings env store)
+                              ;; the checkpoint is read and the tree built
+                              ;; by verify-in-background!, while we answer
+                              :warm-up :background))
         token-file (env "KAJERO_MCP_TOKEN_FILE")
         offered (surfaces (env "KAJERO_SURFACES") (some? token-file))
         mcp (when (offered "mcp")
@@ -795,8 +812,8 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
     (k/keep-flushing! nb)
     (k/keep-checkpointing! nb)
     (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port mcp (contains? offered "http"))
-    ;; The index answers the current revisions from memory, so the verdicts
-    ;; are judged on a second thread for either store.
+    ;; The index answers the current revisions from memory, so the
+    ;; checkpoint warm-up and the verdicts run on a second thread.
     (k/verify-in-background! nb)
     (println (str "kajero on http://127.0.0.1:" port ":"
                   (when (offered "http") " pages")

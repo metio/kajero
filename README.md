@@ -197,10 +197,16 @@ record hashes whose shape depends only on the set of records, so two copies
 holding the same records have the same tree whichever order the records
 arrived in. A checkpoint signs `sha256(format, actors-file digest, tree)`.
 
-At start, the server takes the verdicts of the latest valid checkpoint for
-every record it covers with the same hash and signature under the same
+At start, the server answers as soon as its index has loaded and warms up
+in the background: it reads the latest valid checkpoint, takes its verdicts
+for every record it covers with the same hash and signature under the same
 actors file, and judges only the records added or changed since, in
-parallel. A record edited in place has another hash and is judged again. A
+parallel. Until the warm-up ends, a page or tool that needs a verdict judges
+the signature itself, so no record reads as verified on the checkpoint's
+word alone; `kajero_checkpoint` and the home page say the notebook is
+warming up, missing records are pending, a `missing-records` search is
+refused (HTTP 503 on the pages), and no checkpoint is signed, at shutdown
+neither. Records written meanwhile join the tree before the warm-up ends. A record edited in place has another hash and is judged again. A
 changed actors file invalidates every checkpoint's verdicts. A checkpoint
 whose signature, format or digests do not hold is ignored whole, with a
 warning, and nothing of it is used.
@@ -225,7 +231,7 @@ fresh checkpoint.
 
 The checkpoint key must be a dedicated ed25519 key that signs no records: a
 key the actors file grants is refused, and checkpoint signatures use their
-own namespace, `kajero-checkpoint`. The server signs a checkpoint at start,
+own namespace, `kajero-checkpoint`. The server signs a checkpoint once warm,
 every interval, after the given number of writes and when it stops; a
 notebook whose root did not change signs none. Checkpoints sit beside the
 store, never in it, so neither `git` nor a sync of the store carries them.
