@@ -14,6 +14,7 @@
             [clojure.pprint :as pp]
             [clojure.string :as str]
             [hiccup2.core :as h]
+            [kajero.checkpoint :as checkpoint]
             [kajero.core :as k]
             [kajero.data :as data]
             [kajero.mcp :as mcp]
@@ -123,6 +124,8 @@ details>summary{cursor:pointer;color:var(--accent)}
 .notice{border:1px solid color-mix(in srgb,var(--failed) 45%,transparent);color:var(--failed);
 background:color-mix(in srgb,var(--failed) 8%,transparent);padding:.8rem 1rem;border-radius:10px}
 .empty{color:var(--muted);font-style:italic}
+.alert{border:1px solid color-mix(in srgb,var(--failed) 45%,transparent);border-radius:8px;padding:.6rem .9rem;margin:1rem 0}
+.alert h2{color:var(--failed);margin-top:0}
 .selector{font:13px ui-monospace,Menlo,monospace;color:var(--muted)}
 .data{margin:.8rem 0;overflow-x:auto}
 table.grid-data{border-collapse:collapse;width:100%;font:13px/1.45 ui-monospace,Menlo,monospace}
@@ -292,10 +295,37 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
 
 ;; ------------------------------------------------------------------ pages
 
+(defn- checkpoint-notice
+  "The home page's account of the checkpoints: an alert naming the records
+   of the latest checkpoint that are gone and every warning about a
+   checkpoint, else one line with the latest checkpoint's root and age;
+   nothing when checkpoints are off."
+  [nb]
+  (let [{:keys [enabled? warnings latest covered records missing missing-records]} (k/checkpoint-status nb)]
+    (when (or enabled? (seq warnings))
+      [:div
+       (when (or (pos? (long (or missing 0))) (seq warnings))
+         [:section.alert
+          [:h2 "Checkpoints"]
+          (when (pos? (long (or missing 0)))
+            [:div
+             [:p (str missing " records the latest checkpoint held are missing from the store. "
+                      "A notebook only grows, so a record was deleted or edited in place. ")
+              [:a {:href (view-href "missing-records")} "Entries with missing records"]]
+             [:ul (for [{:keys [hash kind entries]} missing-records]
+                    [:li [:code hash] " " (name kind) " "
+                     (for [e entries] [:a {:href (str "/e/" (enc e))} e " "])])]])
+          (when (seq warnings)
+            [:ul (for [w warnings] [:li w])])])
+       (when latest
+         [:p.meta (str "Checkpoint " (subs (:root latest) 0 19) "… signed " (when-str (:at latest))
+                       ", covering " covered " of " records " records.")])])))
+
 (defn- home [nb]
   (layout {}
           [:h1 "Notebook"]
           [:p.lead "Pages are saved selectors; every entry appears wherever a selector matches it."]
+          (checkpoint-notice nb)
           [:h2 "Pages"]
           (if-let [ps (seq (k/pages nb))]
             [:div.grid (for [{:keys [name title selector intro]} ps]
@@ -751,17 +781,19 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
   [& _]
   (let [env #(not-empty (System/getenv %))
         port (Long/parseLong (or (env "KAJERO_PORT") "7270"))
-        nb (k/notebook {:dir (env "KAJERO_DIR")
-                        :path (or (env "KAJERO_DB") "notes.db")
-                        :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
-                        :actors (env "KAJERO_ACTORS")
-                        :tik-root (env "KAJERO_TIK_ROOT")})
+        store {:dir (env "KAJERO_DIR") :path (or (env "KAJERO_DB") "notes.db")}
+        nb (k/notebook (assoc store
+                              :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
+                              :actors (env "KAJERO_ACTORS")
+                              :tik-root (env "KAJERO_TIK_ROOT")
+                              :checkpoint (checkpoint/settings env store)))
         token-file (env "KAJERO_MCP_TOKEN_FILE")
         offered (surfaces (env "KAJERO_SURFACES") (some? token-file))
         mcp (when (offered "mcp")
               {:token (mcp-token (slurp token-file))
                :writer {:actor (env "KAJERO_MCP_ACTOR") :key (env "KAJERO_MCP_KEY")}})]
     (k/keep-flushing! nb)
+    (k/keep-checkpointing! nb)
     (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port mcp (contains? offered "http"))
     ;; The index answers the current revisions from memory, so the verdicts
     ;; are judged on a second thread for either store.

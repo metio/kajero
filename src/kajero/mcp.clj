@@ -11,6 +11,7 @@
   (:require [cheshire.core :as json]
             [clojure.edn :as edn]
             [clojure.string :as str]
+            [kajero.checkpoint :as checkpoint]
             [kajero.core :as k]
             [kajero.print :as kp]))
 
@@ -30,7 +31,7 @@
 
 (def tools
   [{:name "kajero_search"
-    :description "Entries a selector picks, as summaries. With text terms the best match comes first: a match in the title counts most, then labels, body and data, and each summary carries its score and, per term, the field it matched in with the text around it, so you can judge a hit without reading the entry. Results are ordered by rank = score + min(citations, 3), where citations counts the entries whose current revision names the result as [[<id>]] in its body or links to it by see-also (supersedes and contradicts links, self-references and retired or superseded citers do not count); cite the entries your write built on as [[<id>]]. Without text terms, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, data:field, data:field=value (a dotted field walks the entry's data through maps and into every map of a list, as in data:hosts.domain=x; terms about one list must hold in the same element, and each result carries the deepest matching elements as rows), actor=name, ticket=<tik ticket id>, path=<repository path> (the title, body or evidence names that file; one path ending with the other at a segment boundary counts, so path=helm-charts/x/templates/a.tpl finds an entry citing templates/a.tpl), link=<entry id> (linked to that entry in either direction), link:<type>=<entry id> (linked by supersedes, contradicts or see-also), schema-revision=<hash>, outdated-schema, disputed, stale, unsigned (the current revision carries no signature), bad-signature (it carries one that does not verify against the actors file), unverified (either), superseded, retired, missed (entries whose current revision a search missed: they need better titles or labels), coverage (kind=coverage entries: which questions were asked, over what population, how and when - search coverage with the subject's labels before concluding from an empty result that nothing is known), never-returned (no search has returned the entry since the counting began; never-returned=YYYY-MM-DD since that day: its title or labels do not match how it is searched for), returned-unopened (searches returned it at least 3 times and no session opened it with kajero_get after any of them; returned-unopened=N for at least N: its title or summary does not match what it holds), ~text. Join terms with | to accept any of them, as in calico|coredns or label:kind=gotcha|label:kind=fact: use it when the wording is a guess, because two separate words must both match; the entries holding more of the alternatives rank first, and a data: term cannot be an alternative. Retired entries are left out unless the selector names retired. An empty selector picks every entry that is not retired. The server counts, per entry and day, how often a search returned it; it keeps no selector or query text, and a search with an empty selector or a usage term counts nothing. The counts never change the rank."
+    :description "Entries a selector picks, as summaries. With text terms the best match comes first: a match in the title counts most, then labels, body and data, and each summary carries its score and, per term, the field it matched in with the text around it, so you can judge a hit without reading the entry. Results are ordered by rank = score + min(citations, 3), where citations counts the entries whose current revision names the result as [[<id>]] in its body or links to it by see-also (supersedes and contradicts links, self-references and retired or superseded citers do not count); cite the entries your write built on as [[<id>]]. Without text terms, most recently changed first. Selector terms, all of which must hold, each optionally prefixed `not`: label:key, label:key=value, data:field, data:field=value (a dotted field walks the entry's data through maps and into every map of a list, as in data:hosts.domain=x; terms about one list must hold in the same element, and each result carries the deepest matching elements as rows), actor=name, ticket=<tik ticket id>, path=<repository path> (the title, body or evidence names that file; one path ending with the other at a segment boundary counts, so path=helm-charts/x/templates/a.tpl finds an entry citing templates/a.tpl), link=<entry id> (linked to that entry in either direction), link:<type>=<entry id> (linked by supersedes, contradicts or see-also), schema-revision=<hash>, outdated-schema, disputed, stale, unsigned (the current revision carries no signature), bad-signature (it carries one that does not verify against the actors file), unverified (either), superseded, retired, missed (entries whose current revision a search missed: they need better titles or labels), missing-records (a record of the entry that the latest signed checkpoint held is gone from the store; see kajero_checkpoint), coverage (kind=coverage entries: which questions were asked, over what population, how and when - search coverage with the subject's labels before concluding from an empty result that nothing is known), never-returned (no search has returned the entry since the counting began; never-returned=YYYY-MM-DD since that day: its title or labels do not match how it is searched for), returned-unopened (searches returned it at least 3 times and no session opened it with kajero_get after any of them; returned-unopened=N for at least N: its title or summary does not match what it holds), ~text. Join terms with | to accept any of them, as in calico|coredns or label:kind=gotcha|label:kind=fact: use it when the wording is a guess, because two separate words must both match; the entries holding more of the alternatives rank first, and a data: term cannot be an alternative. Retired entries are left out unless the selector names retired. An empty selector picks every entry that is not retired. The server counts, per entry and day, how often a search returned it; it keeps no selector or query text, and a search with an empty selector or a usage term counts nothing. The counts never change the rank."
     :inputSchema {:type "object" :properties {:selector {:type "string"}}}}
    {:name "kajero_get"
     :description "One entry: its current revision, body, labels, data (also as data_edn), evidence, standing, links, the observations a later one corrected (corrections), and the tik tickets its records cite with their current stages. A schema entry also lists the entries using it (used_by). The server counts the read, and whether a search of this session returned the entry before it."
@@ -95,6 +96,9 @@
                                :type {:type "string" :enum ["supersedes" "contradicts" "see-also"]}
                                :target {:type "string"}}
                   :required ["source" "type" "target"]}}
+   {:name "kajero_checkpoint"
+    :description "Where the notebook's signed checkpoints stand: the root of its records now, the latest checkpoint's root, time and age, how many records it covers unchanged, and the records it held that are missing from the store now, with the entries they belonged to. A missing record means a record of a grow-only notebook was deleted or edited; the selector term missing-records finds the entries concerned. Warnings name a checkpoint that was ignored, for example one whose signature does not verify under the pinned key."
+    :inputSchema {:type "object" :properties {}}}
    {:name "kajero_migrate"
     :description "Run a migration entry (labelled kind=migration, data {:from schema :to schema :steps [...]}): every entry using the :from schema gets a new revision with converted data on the :to schema. Nothing is written when any entry fails to convert or to fit the :to schema; an entry somebody revises meanwhile is reported as stale and keeps its schema. Use dry_run first to see the result."
     :inputSchema {:type "object"
@@ -172,6 +176,7 @@
                      (contains? e :used-by) (-> (assoc :used_by (:used-by e)) (dissoc :used-by))))
     "kajero_history" (k/history nb entry)
     "kajero_labels" (k/labels nb)
+    "kajero_checkpoint" (k/checkpoint-status nb)
     "kajero_write" (k/write! nb (merge writer {:title title :body body :labels labels :evidence evidence}
                                        (when data_edn {:data (read-edn data_edn)})))
     "kajero_revise" (k/revise! nb entry (merge writer {:base base :title title :body body
@@ -243,11 +248,12 @@
 (defn -main
   [& _]
   (let [env #(not-empty (System/getenv %))
-        nb (k/notebook {:dir (env "KAJERO_DIR")
-                        :path (or (env "KAJERO_DB") "notes.db")
-                        :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
-                        :actors (env "KAJERO_ACTORS")
-                        :tik-root (env "KAJERO_TIK_ROOT")})
+        store {:dir (env "KAJERO_DIR") :path (or (env "KAJERO_DB") "notes.db")}
+        nb (k/notebook (assoc store
+                              :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
+                              :actors (env "KAJERO_ACTORS")
+                              :tik-root (env "KAJERO_TIK_ROOT")
+                              :checkpoint (checkpoint/settings env store)))
         writer {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")}
         ;; A stdio connection is one MCP session from start to end.
         session (k/start-session! nb)]
@@ -255,6 +261,7 @@
     ;; are judged on a second thread for either store.
     (k/verify-in-background! nb)
     (k/keep-flushing! nb)
+    (k/keep-checkpointing! nb)
     (loop []
       (when-let [line (read-line)]
         (when-let [response (handle nb writer session line)]
