@@ -22,6 +22,9 @@
      missed                     a search did not find the current revision
                                 although it held the answer: the entry
                                 needs the words a searcher would use
+     missing-records            a record of the entry that the latest signed
+                                checkpoint held is gone from the store - see
+                                kajero.checkpoint
      coverage                   a kind=coverage entry: the record that a
                                 question was asked, with its population,
                                 method and day - `coverage label:system=dns`
@@ -52,7 +55,7 @@
    `compile` returns a predicate over a row
      {:labels {\"kind\" \"gotcha\"} :actors #{\"seb\"} :links #{[\"see-also\" id]} :haystack \"...\" :data ...
       :disputed? bool :stale? bool :missed? bool :unsigned? bool :bad-signature? bool
-      :unverified? bool :superseded? bool}
+      :unverified? bool :superseded? bool :missing-records? bool}
    or throws ex-info {:reason :select/bad-term}. `reads` names the keys of
    the row the predicate reads, so a caller computes only those."
   (:refer-clojure :exclude [compile])
@@ -159,7 +162,7 @@
   "The terms that read one boolean of the row, by the key they read."
   {"disputed" :disputed? "stale" :stale? "unsigned" :unsigned? "bad-signature" :bad-signature?
    "unverified" :unverified? "superseded" :superseded? "retired" :retired? "missed" :missed?
-   "outdated-schema" :outdated-schema?})
+   "outdated-schema" :outdated-schema? "missing-records" :missing-records?})
 
 (defn- term-pred
   [term]
@@ -234,7 +237,7 @@
   (and (boolean (seq (terms selector))) (not (reads-usage? selector))))
 
 (defn- text-term? [t]
-  (and (not (contains? #{"not" "disputed" "stale" "unsigned" "bad-signature" "unverified" "superseded" "retired" "outdated-schema" "coverage" "missed"} t))
+  (and (not (contains? #{"not" "disputed" "stale" "unsigned" "bad-signature" "unverified" "superseded" "retired" "outdated-schema" "coverage" "missed" "missing-records"} t))
        (not (usage-term t))
        (not (str/includes? t "="))
        (not (str/starts-with? t "label:"))

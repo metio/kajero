@@ -11,10 +11,15 @@
      KAJERO_ACTORS   the allowed-signers file signatures are checked against
      KAJERO_ACTOR    the actor a write names
      KAJERO_KEY      the private key a write is signed with
-     KAJERO_TIK_ROOT the tik store whose tickets evidence cites as tik:<id>"
+     KAJERO_TIK_ROOT the tik store whose tickets evidence cites as tik:<id>
+     KAJERO_CHECKPOINT_PUBKEY, KAJERO_CHECKPOINT_DIR
+                     the pinned checkpoint key and where checkpoints live -
+                     see kajero.checkpoint/settings; the command line reads
+                     checkpoints and never signs one"
   (:require [clojure.edn :as edn]
             [clojure.pprint :as pp]
             [clojure.string :as str]
+            [kajero.checkpoint :as checkpoint]
             [kajero.core :as k])
   (:gen-class))
 
@@ -38,6 +43,8 @@
   usage [--since DAY] [--min N]           entries no search returned (since DAY,
                                           YYYY-MM-DD) and entries returned at least
                                           N times (default 3) that nobody opened
+  checkpoint                              the latest signed checkpoint: its root, age,
+                                          the records it covers and those now missing
 
   A body or data of - reads it from stdin. Data is EDN; an entry labelled
   kind=schema holds a malli schema, and schema=ID checks data against one.
@@ -110,16 +117,19 @@
                (k/link! nb (merge (writer) {:source source :type type :target target})))
       "migrate" (k/migrate! nb (first pos) (assoc (writer) :dry-run? (= "dry-run" (second pos))))
       "usage" (usage-report nb (one flags :since) (one flags :min))
+      "checkpoint" (k/checkpoint-status nb)
       (throw (ex-info usage {:reason :kajero/usage})))))
 
 (defn -main
   [& args]
   (try
-    (let [nb (k/notebook {:dir (env "KAJERO_DIR")
-                          :path (or (env "KAJERO_DB") "notes.db")
-                          :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
-                          :actors (env "KAJERO_ACTORS")
-                          :tik-root (env "KAJERO_TIK_ROOT")})]
+    (let [store {:dir (env "KAJERO_DIR") :path (or (env "KAJERO_DB") "notes.db")}
+          nb (k/notebook (assoc store
+                                :signing (keyword (or (env "KAJERO_SIGNING") "optional"))
+                                :actors (env "KAJERO_ACTORS")
+                                :tik-root (env "KAJERO_TIK_ROOT")
+                                ;; reading checkpoints needs no signing key
+                                :checkpoint (some-> (checkpoint/settings env store) (dissoc :key))))]
       (try (pp/pprint (run-command nb args))
            (finally (k/close! nb)))
       (shutdown-agents))

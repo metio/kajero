@@ -10,11 +10,13 @@
    signing is :optional takes them and marks them unsigned. A signature is
    checked against the actors file before anything is written."
   (:require [clojure.string :as str]
+            [kajero.checkpoint :as checkpoint]
             [kajero.cite :as cite]
             [kajero.data :as data]
             [kajero.data-query :as dq]
             [kajero.derived :as derived]
             [kajero.index :as index]
+            [kajero.merkle :as merkle]
             [kajero.migrate :as migrate]
             [kajero.rank :as rank]
             [kajero.record :as record]
@@ -24,7 +26,8 @@
             [kajero.tik :as tik]
             [kajero.usage :as usage]
             [kajero.verify :as verify])
-  (:import (java.time Instant)))
+  (:import (java.time Duration Instant)
+           (java.util.concurrent Executors ScheduledExecutorService ThreadFactory TimeUnit)))
 
 (def ^:dynamic *now*
   "The clock of a write or a read; tests bind it."
@@ -37,33 +40,108 @@
 (defn- warm-on-append
   "What a notebook computes for a record it has just written: every value
    a search derives from a revision, and the revision's signature verdict,
-   so the first search after a write finds them remembered."
-  [verifier]
+   so the first search after a write finds them remembered. `after`, when
+   given, runs last with the kind and the record."
+  [verifier after]
   (fn [kind rec]
     (if (= :revision kind)
       (verify/verdict verifier rec (derived/warm-revision! rec))
-      (derived/hash-of rec))))
+      (derived/hash-of rec))
+    (when after (after kind rec))))
+
+(defn- leaves-fn
+  "The Merkle leaves of records, for the index - see kajero.index/indexed:
+   every record judged under one reading of the actors file, in parallel,
+   so a verdict a checkpoint seeded is a cache hit and only the others are
+   checked."
+  [verifier]
+  (fn [records]
+    (let [reg (verify/registry verifier)
+          judged (verify/judge-all verifier reg (map second records) derived/hash-of)]
+      {:actors (:digest reg)
+       :leaves (mapv (fn [[kind rec] [h v]] (checkpoint/leaf kind rec h v)) records judged)})))
+
+(defn- log!
+  [& xs]
+  (binding [*out* *err*]
+    (apply println "kajero:" xs)))
+
+(defn- open-checkpoints
+  "The checkpoint state of a notebook whose settings are `cfg` - see
+   kajero.checkpoint/settings - before its index loads: the latest valid
+   checkpoint, whose verdicts are seeded into the verifier's cache when it
+   was judged under the actors file as it is now."
+  [cfg verifier]
+  (let [reg (verify/registry verifier)
+        {:keys [config warnings]} (checkpoint/prepare cfg (:text reg))
+        loaded (when config (checkpoint/latest config))
+        latest (:latest loaded)
+        actors (get-in latest [:header :actors])
+        seeded (if latest (verify/seed! reg actors (:leaves latest)) 0)
+        warnings (cond-> (into (vec warnings)
+                               (map #(str "checkpoint " (:file %) " ignored: " (:reason %)))
+                               (:warnings loaded))
+                   (and latest (not= actors (:digest reg)))
+                   (conj (str "the actors file changed since checkpoint " (:file latest)
+                              ", so every signature is judged again")))]
+    (run! log! warnings)
+    (atom {:config config :latest latest :warnings warnings :seeded seeded :writes 0 :candidates []})))
+
+(defn- settle-checkpoints!
+  "Compares the latest checkpoint with the records the index loaded: the
+   records it held that are gone now are the candidates `missing-records`
+   reports while they stay gone."
+  [ck s]
+  (let [{:keys [latest]} @ck
+        t (:merkle (index/tree s))
+        gone (if latest (checkpoint/missing latest t) [])]
+    (swap! ck assoc :candidates gone)
+    (when latest
+      (log! (str "checkpoint " (:file latest) " covers " (checkpoint/covered latest t) " of "
+                 (merkle/size t) " records")))
+    (when (seq gone)
+      (log! (str (count gone) " records of the latest checkpoint are missing from the store")))))
 
 (defn notebook
   "{:path \"notes.db\"} for SQLite or {:dir \"notes/\"} for flat files, with
    :signing :optional|:required, :actors \"allowed_signers\", and :tik-root, the
    tik store whose tickets evidence may cite as tik:<id>. :tik-status replaces
-   the lookup of a ticket, for tests.
+   the lookup of a ticket, and :check the signature check, for tests.
 
    The store sits behind an in-memory index - see kajero.index - whose
    :refresh-ms says how old it may get before a read picks up what other
    processes wrote; :index? false reads the store directly.
 
+   :checkpoint, the settings of kajero.checkpoint/settings, makes the index
+   keep a Merkle tree over every record and its verdict. The latest valid
+   checkpoint's verdicts are taken for the records it covers unchanged, so
+   loading judges only the records added or changed since; the records it
+   held that are gone are reported by `missing-records`. Only
+   keep-checkpointing! signs new checkpoints.
+
    Searches and reads made through search! and open! are counted beside
    the notebook - see kajero.usage: in the database's usage tables, or in
    <dir>.usage.edn next to a flat-file notebook. The counts are held in
    memory until flush! or close! writes them."
-  [{:keys [signing actors tik-root tik-status dir refresh-ms index?] :or {signing :optional index? true} :as opts}]
+  [{:keys [signing actors tik-root tik-status dir refresh-ms index? check checkpoint] :or {signing :optional index? true} :as opts}]
   (let [s (store/open opts)
-        verifier (verify/verifier actors)]
-    {:store (if index? (index/indexed s {:refresh-ms refresh-ms :on-append (warm-on-append verifier)}) s)
+        verifier (verify/verifier actors (cond-> {} check (assoc :check check)))
+        ck (when (and checkpoint index?) (open-checkpoints checkpoint verifier))
+        trees? (boolean (and ck (:config @ck)))
+        after (when trees?
+                (fn [_ _]
+                  (let [{:keys [writes on-threshold config]} (swap! ck update :writes inc)]
+                    (when (and on-threshold (>= (long writes) (long (:writes config))))
+                      (on-threshold)))))
+        st (if index?
+             (index/indexed s (cond-> {:refresh-ms refresh-ms :on-append (warm-on-append verifier after)}
+                                trees? (assoc :leaves (leaves-fn verifier))))
+             s)]
+    (when trees? (settle-checkpoints! ck st))
+    {:store st
      :signing signing :actors actors
      :verifier verifier
+     :checkpoints ck
      :citations (atom nil)
      :usage (usage/recorder (if dir (usage/file-log (usage/beside dir)) (usage/sqlite-log (:conn s))))
      :tik-status (or tik-status (when tik-root (tik/cached (tik/status-in tik-root))))}))
@@ -73,10 +151,14 @@
   [nb]
   (usage/flush! (:usage nb)))
 
+(declare stop-checkpointing!)
+
 (defn close!
-  "Stops the notebook's periodic flush, if one runs, and writes the counts
-   still held in memory."
+  "Stops the notebook's periodic flush and checkpoints, if they run,
+   writes the counts still held in memory and signs a last checkpoint when
+   the notebook signs them."
   [nb]
+  (stop-checkpointing! nb)
   (usage/close! (:usage nb)))
 
 (defn keep-flushing!
@@ -220,6 +302,140 @@
     (.setDaemon true)
     (.start)))
 
+;; ------------------------------------------------------------- checkpoints
+
+(defn missing-records
+  "The records the latest checkpoint held, or carried as missing, that the
+   store does not hold now, as Merkle leaves {:hash :sig :verdict :kind
+   :entries}; empty without checkpoints."
+  [nb]
+  (if-let [ck (:checkpoints nb)]
+    (let [t (:merkle (index/tree (:store nb)))]
+      (filterv #(nil? (merkle/lookup t (:hash %))) (:candidates @ck)))
+    []))
+
+(defn- missing-entry-ids
+  [nb]
+  (into #{} (mapcat :entries) (missing-records nb)))
+
+(defn- tree-actors
+  "The digest of the actors file every leaf of the index's tree was judged
+   under, or ::mixed when they were judged under several or a leaf could
+   not be computed. An empty tree takes `current`."
+  [{:keys [actors stale?]} current]
+  (cond
+    stale? ::mixed
+    (empty? actors) current
+    (= 1 (count actors)) (first actors)
+    :else ::mixed))
+
+(def missing-shown
+  "The most missing records a status lists one by one."
+  100)
+
+(defn checkpoint-status
+  "Where the notebook's checkpoints stand: whether they are on and this
+   process signs them, the root of the records as they are now, the latest
+   valid checkpoint with its root, time and age, how many records it covers
+   unchanged, the records it held that are missing now (the first
+   `missing-shown` of them listed), the writes since it was signed, and
+   every warning about the checkpoint key or a checkpoint that was ignored."
+  [nb]
+  (if-let [ck (:checkpoints nb)]
+    (let [{:keys [config latest warnings writes seeded]} @ck
+          reg (registry nb)
+          t (index/tree (:store nb))
+          d (tree-actors t (:digest reg))
+          gone (missing-records nb)
+          h (:header latest)]
+      (cond-> {:enabled? (some? config)
+               :signing? (boolean (:key config))
+               :warnings warnings}
+        config (assoc :dir (:dir config)
+                      :records (merkle/size (:merkle t))
+                      :root (when (and (not= ::mixed d) (= d (:digest reg)))
+                              (merkle/root merkle/format-version d (merkle/digest (:merkle t))))
+                      :covered (if latest (checkpoint/covered latest (:merkle t)) 0)
+                      :seeded seeded
+                      :missing (count gone)
+                      :missing-records (vec (take missing-shown gone))
+                      :writes-since writes)
+        latest (assoc :latest {:file (:file latest) :root (:root h) :at (:at h)
+                               :age-seconds (max 0 (.getSeconds (Duration/between (Instant/parse (:at h)) (now))))
+                               :leaves (:leaves h) :missing (:missing h)
+                               :actors-match? (= (:actors h) (:digest reg))})))
+    {:enabled? false}))
+
+(defn sign-checkpoint!
+  "Signs a checkpoint of the records the index holds now, unless the
+   latest one already has the same root and the same missing records.
+   An actors file that changed since the leaves were judged makes the
+   index judge every record again first. Returns the checkpoint signed or
+   kept, or nil when this notebook signs none."
+  [nb]
+  (when-let [ck (:checkpoints nb)]
+    (when (get-in @ck [:config :key])
+      (locking ck
+        (let [reg (registry nb)
+              st (:store nb)
+              t0 (index/tree st)
+              t (if (= (:digest reg) (tree-actors t0 (:digest reg))) t0 (index/rebuild-tree! st))
+              d (tree-actors t (:digest reg))]
+          (when-not (= ::mixed d)
+            (let [gone (missing-records nb)
+                  {:keys [latest config]} @ck
+                  h (:header latest)
+                  root (merkle/root merkle/format-version d (merkle/digest (:merkle t)))]
+              (if (and latest (= root (:root h)) (= (merkle/digest (merkle/build gone)) (:missing-tree h)))
+                (do (swap! ck assoc :writes 0) latest)
+                (let [c (checkpoint/sign! config {:tree (:merkle t) :actors d :missing-leaves gone :at (now)})]
+                  (swap! ck assoc :latest c :candidates gone :writes 0)
+                  c)))))))))
+
+(defn- daemon-factory
+  ^ThreadFactory [thread-name]
+  (reify ThreadFactory
+    (newThread [_ r] (doto (Thread. ^Runnable r ^String thread-name) (.setDaemon true)))))
+
+(defn- sign-quietly!
+  [nb when-text]
+  (try (sign-checkpoint! nb)
+       (catch Exception e
+         (log! (str "signing a checkpoint " when-text " failed -") (or (ex-message e) (.getName (class e)))))))
+
+(defn keep-checkpointing!
+  "Signs a checkpoint now, then every :interval-ms, after every :writes
+   writes and once more when the JVM shuts down or the notebook is closed,
+   on a daemon thread of its own. A notebook that signs no checkpoints is
+   returned unchanged. For a long-running server."
+  [nb]
+  (when-let [ck (:checkpoints nb)]
+    (when-let [{:keys [interval-ms]} (when (get-in @ck [:config :key]) (:config @ck))]
+      (let [^ScheduledExecutorService exec (Executors/newSingleThreadScheduledExecutor (daemon-factory "kajero-checkpoint"))
+            queued (atom false)
+            ;; an exception would end the schedule, and sign-quietly! logs its own
+            task (fn [] (reset! queued false) (sign-quietly! nb "on schedule"))
+            hook (Thread. ^Runnable (fn [] (sign-quietly! nb "at shutdown")) "kajero-checkpoint-shutdown")]
+        (swap! ck assoc
+               :on-threshold (fn [] (when (compare-and-set! queued false true) (.execute exec ^Runnable task)))
+               :running {:exec exec :hook hook})
+        (.execute exec ^Runnable task)
+        (.scheduleWithFixedDelay exec ^Runnable task (long interval-ms) (long interval-ms) TimeUnit/MILLISECONDS)
+        (.addShutdownHook (Runtime/getRuntime) hook))))
+  nb)
+
+(defn- stop-checkpointing!
+  "Stops what keep-checkpointing! started and signs a last checkpoint."
+  [nb]
+  (when-let [ck (:checkpoints nb)]
+    (when-let [{:keys [^ScheduledExecutorService exec hook]} (:running @ck)]
+      (swap! ck dissoc :running :on-threshold)
+      (.shutdownNow exec)
+      (try (.removeShutdownHook (Runtime/getRuntime) hook)
+           ;; the JVM is shutting down already, and the hook signs
+           (catch IllegalStateException _ nil))
+      (sign-quietly! nb "on close"))))
+
 (defn- corrections
   "Every observation a later one corrected, oldest first:
    {:observation :outcome :revision :actor :at} of the corrected one with
@@ -362,6 +578,7 @@
    :unverified? #(not= :verified @(:state %))
    :superseded? #(deref (:superseded? %))
    :retired? #(some? (:retired (:rev %)))
+   :missing-records? (fn [{:keys [nb id]}] (contains? (missing-entry-ids nb) id))
    :usage (fn [{:keys [counts id]}] (when counts (usage/of-entry counts id)))})
 
 (deftype ^:private Row [facts fields ^java.util.HashMap memo]
