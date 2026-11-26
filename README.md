@@ -127,6 +127,15 @@ own is refused. Writes over MCP name `KAJERO_MCP_ACTOR` and are signed with
 `KAJERO_MCP_KEY`; the pages keep writing as `KAJERO_ACTOR`. The endpoint
 answers each JSON-RPC message with JSON and opens no event stream.
 
+Both transports speak the MCP revisions of the `initialize` handshake
+(2024-11-05 to 2025-06-18) and revision 2026-07-28, in which every request
+names its revision and the client's capabilities in its own `_meta` and a
+client may start with `server/discover`. On `/mcp` a 2026-07-28 request must
+repeat its revision, method and name in the `MCP-Protocol-Version`,
+`Mcp-Method` and `Mcp-Name` headers, and is refused with 400 when they
+differ from the body. That revision has no sessions, so its searches and
+reads count for no session in the usage counts.
+
 `KAJERO_SURFACES` picks what the server offers: `http` for the pages and
 their EDN, `mcp` for the tools, or `http,mcp`. Without it, the server
 offers `http`, and `mcp` too when a token file is given; a surface left
@@ -444,9 +453,9 @@ serves it, over stdio and on `/mcp`, so an agent connected to kajero reads
 the skill of the version it talks to without installing anything. Linking
 the directory into `~/.claude/skills/kajero` still works.
 
-Clients that support the MCP Skills extension (`io.modelcontextprotocol/skills`,
-Claude Code from v2.1.331) list it with `skills/list` and `skills/get`;
-Claude Code names it `kajero:kajero`. Every other client finds
+Clients that support the MCP Skills extension (`io.modelcontextprotocol/skills`)
+list it with `skills/list` and `skills/get`. Claude Code from v2.1.331 does
+so over revision 2026-07-28 only, and names the skill `kajero:kajero`. Every other client finds
 `skill://kajero/SKILL.md` with `resources/list` and `resources/read`, and
 the server instructions name that URI. The jar and the binary carry the
 skill as classpath resources the build copies from `skills/`, so a release

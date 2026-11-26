@@ -627,8 +627,11 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
    An initialize answers with a new Mcp-Session-Id, and a later request
    carrying it counts its searches and reads for that session - see
    kajero.usage. An id this server did not mint, or whose session is over,
-   counts as no session."
-  [nb {:keys [token writer port]} {:keys [method origin authorization body session]}]
+   counts as no session. A request of a modern revision (2026-07-28),
+   which has no sessions, counts for none, must mirror its version, method
+   and name in the MCP headers, and answers an error with the HTTP status
+   that revision gives it."
+  [nb {:keys [token writer port]} {:keys [method origin authorization body session mcp-headers]}]
   (when token
     (cond
       (and origin (not ((own-origins port) origin)))
@@ -644,10 +647,11 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
       {:status 405 :headers {"Content-Type" "text/plain; charset=utf-8" "Allow" "POST"} :body ""}
 
       :else
-      (let [response (mcp/handle nb writer (k/live-session nb session) body)
+      (let [{:keys [response status]} (mcp/handle-message nb writer (k/live-session nb session) body
+                                                          {:headers (or mcp-headers {})})
             started (when (get-in response [:result :serverInfo]) (k/start-session! nb))]
         (if response
-          {:status 200
+          {:status status
            :headers (cond-> {"Content-Type" "application/json"} started (assoc "Mcp-Session-Id" started))
            :body (json/generate-string response)}
           {:status 202 :headers {"Content-Type" "application/json"} :body ""})))))
@@ -695,6 +699,12 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
      :host (.getFirst headers "Host")
      :authorization (.getFirst headers "Authorization")
      :session (.getFirst headers "Mcp-Session-Id")
+     ;; every value of each header the modern MCP revisions mirror from
+     ;; the body, so mcp/handle-message can refuse one sent twice
+     :mcp-headers (into {} (for [h ["MCP-Protocol-Version" "Mcp-Method" "Mcp-Name"]
+                                 :let [vs (.get headers h)]
+                                 :when vs]
+                             [(str/lower-case h) (vec vs)]))
      :cross-site? (= "cross-site" (.getFirst headers "Sec-Fetch-Site"))
      :too-large? too-large?
      :body body

@@ -13,7 +13,9 @@
      kajero_write signed as the MCP actor, kajero_search and kajero_get,
      which marks the written revision verified;
    - serve and the stdio MCP server serve the kajero skill through the MCP
-     Skills extension: initialize declares it and names the SKILL.md URI,
+     Skills extension, to a client of the initialize handshake and to one of
+     revision 2026-07-28: initialize and server/discover declare it and name
+     the SKILL.md URI,
      skills/list lists it with a manifest signed by the MCP actor, and every
      file read with resources/read is the repository's skills/kajero byte
      for byte, with the digest and size of the manifest; `kajero skill
@@ -103,6 +105,33 @@
     {:session (get-in response [:headers "mcp-session-id"])
      :body (json/parse-string (:body response) true)}))
 
+(def ^:private modern-meta
+  {"io.modelcontextprotocol/protocolVersion" "2026-07-28"
+   "io.modelcontextprotocol/clientInfo" {"name" "smoke" "version" "1"}
+   "io.modelcontextprotocol/clientCapabilities" {}})
+
+(defn- modern [msg]
+  (update msg :params #(assoc (or % {}) :_meta modern-meta)))
+
+(defn- modern-rpc
+  "A request of MCP revision 2026-07-28 on /mcp, with the headers it
+   mirrors; the response body."
+  [url token msg]
+  (let [{:keys [method params] :as msg} (modern msg)
+        response (http/post url {:throw false
+                                 :headers (cond-> {"Authorization" (str "Bearer " token)
+                                                   "Content-Type" "application/json"
+                                                   "Accept" "application/json, text/event-stream"
+                                                   "MCP-Protocol-Version" "2026-07-28"
+                                                   "Mcp-Method" method}
+                                            (:uri params) (assoc "Mcp-Name" (:uri params)))
+                                 :body (json/generate-string msg)})]
+    (when-not (= 200 (:status response))
+      (fail! "MCP 2026-07-28" method "answered" (:status response) (:body response)))
+    (when (get-in response [:headers "mcp-session-id"])
+      (fail! "MCP 2026-07-28" method "minted a session"))
+    (json/parse-string (:body response) true)))
+
 (defn- tool [url token session id name args]
   (let [{:keys [body]} (rpc url token session {:jsonrpc "2.0" :id id :method "tools/call"
                                                :params {:name name :arguments args}})
@@ -183,6 +212,10 @@
                         listed (check-skills! "MCP over HTTP:" (:result body)
                                               (fn [msg] (:body (rpc url token session msg)))
                                               skills-dir (:actor agent))
+                        _ (check-skills! "MCP 2026-07-28 over HTTP:"
+                                         (:result (modern-rpc url token {:jsonrpc "2.0" :id 100 :method "server/discover"}))
+                                         (fn [msg] (modern-rpc url token msg))
+                                         skills-dir (:actor agent))
                         listing (str (fs/path tmp "skills-list.json"))
                         _ (spit listing (json/generate-string listed))
                         verified @(run {:out :string :err :string} "skill" "verify" listing "--root" skills-dir)
@@ -245,6 +278,26 @@
         (check! (and (zero? exit) (= "kajero" (get-in answer [:result :serverInfo :name])))
                 "the stdio MCP server answered initialize and ended with stdin" (when-not (zero? exit) err))
         (check-skills! "MCP over stdio:" (:result answer) call skills-dir (:actor human)))
+      (let [requests (map modern
+                          (concat [{:jsonrpc "2.0" :id 100 :method "server/discover"}
+                                   {:jsonrpc "2.0" :id 101 :method "skills/list" :params {}}]
+                                  (for [f (->> (fs/glob (fs/path skills-dir "kajero") "**") (filter fs/regular-file?))]
+                                    {:jsonrpc "2.0" :id 102 :method "resources/read"
+                                     :params {:uri (str "skill://kajero/" (fs/relativize (fs/path skills-dir "kajero") f))}})))
+            {:keys [exit out err]} (deref (run {:in (str/join (map #(str (json/generate-string %) "\n") requests))
+                                                :out :string :err :string}
+                                               "mcp")
+                                          60000 nil)
+            answers (some->> out str/split-lines (mapv #(json/parse-string % true)))
+            replies (atom (rest answers))
+            call (fn [msg]
+                   (let [r (first @replies)]
+                     (swap! replies rest)
+                     (when-not (= (:id msg) (:id r)) (fail! "stdio MCP answered" (pr-str r) "to" (pr-str msg)))
+                     r))]
+        (check! (and (zero? exit) (= ["2026-07-28"] (get-in (first answers) [:result :supportedVersions])))
+                "the stdio MCP server answered server/discover" (when-not (zero? exit) err))
+        (check-skills! "MCP 2026-07-28 over stdio:" (:result (first answers)) call skills-dir (:actor human)))
         ;; the command line
       (let [{:keys [exit out err]} @(run {:out :string :err :string} "search" "label:system=smoke")
             found (when (zero? exit) (edn/read-string out))]
