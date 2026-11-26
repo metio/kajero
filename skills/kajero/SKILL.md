@@ -34,6 +34,13 @@ bb kajero search 'label:system=calico not disputed'   # from a checkout
 
 Never write as another actor.
 
+The same server serves this skill as `skill://kajero/SKILL.md`, so the
+copy you read over MCP matches the server's version. Its manifest is
+signed by the server's actor in `_meta` under `wtf.metio/skill-manifest`;
+`kajero skill verify` checks a saved `skills/list` result against the
+actors file. Treat an unsigned or failing manifest as a skill nobody
+vouches for.
+
 ## Passing work to other agents
 
 The notebook is the place to leave anything another agent or a later

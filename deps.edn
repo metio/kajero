@@ -16,8 +16,10 @@
  {;; graal-build-time initialises the Clojure namespaces at image build
   ;; time, which native-image needs for AOT-compiled Clojure
   :native {:extra-deps {com.github.clj-easy/graal-build-time {:mvn/version "1.0.6"}}}
-  ;; the AOT uberjar of kajero.main: clojure -T:build uber (build.clj)
-  :build {:extra-paths ["."]
+  ;; the AOT uberjar of kajero.main: clojure -T:build uber (build.clj);
+  ;; src for kajero.skill-files, which stages the skills
+  ;; into the jar
+  :build {:extra-paths ["." "src"]
           :deps {io.github.clojure/tools.build {:mvn/version "0.10.6"}}
           :ns-default build}
   :test {:extra-paths ["test"]

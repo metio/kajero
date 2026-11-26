@@ -18,7 +18,8 @@
             [kajero.core :as k]
             [kajero.data :as data]
             [kajero.mcp :as mcp]
-            [kajero.print :as kp])
+            [kajero.print :as kp]
+            [kajero.skills :as skills])
   (:import (com.sun.net.httpserver HttpExchange HttpHandler HttpServer)
            (java.net InetSocketAddress URLDecoder URLEncoder)
            (java.nio.charset StandardCharsets)
@@ -809,6 +810,9 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
         mcp (when (offered "mcp")
               {:token (mcp-token (slurp token-file))
                :writer {:actor (env "KAJERO_MCP_ACTOR") :key (env "KAJERO_MCP_KEY")}})]
+    ;; A staged skill MCP cannot serve is a broken build: fail the start
+    ;; instead of the first request.
+    (when mcp @skills/served)
     (k/keep-flushing! nb)
     (k/keep-checkpointing! nb)
     (start! nb {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")} port mcp (contains? offered "http"))
