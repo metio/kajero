@@ -53,7 +53,8 @@
      {:labels {\"kind\" \"gotcha\"} :actors #{\"seb\"} :links #{[\"see-also\" id]} :haystack \"...\" :data ...
       :disputed? bool :stale? bool :missed? bool :unsigned? bool :bad-signature? bool
       :unverified? bool :superseded? bool}
-   or throws ex-info {:reason :select/bad-term}."
+   or throws ex-info {:reason :select/bad-term}. `reads` names the keys of
+   the row the predicate reads, so a caller computes only those."
   (:refer-clojure :exclude [compile])
   (:require [clojure.string :as str]
             [kajero.data-query :as dq]
@@ -61,6 +62,20 @@
             [kajero.usage :as usage])
   (:import (java.time LocalDate)
            (java.time.format DateTimeParseException)))
+
+(defn- reading
+  "`pred` as a predicate that declares the row keys `ks` it reads. The
+   wrapper is a fresh function, so a keyword or a shared predicate can
+   carry the declaration."
+  [ks pred]
+  #_{:splint/disable [lint/fn-wrapper]}
+  (with-meta (fn [row] (pred row)) {::reads (set ks)}))
+
+(defn reads
+  "The row keys a predicate made here reads; a predicate `compile`
+   returned reads no other key of its row."
+  [pred]
+  (::reads (meta pred) #{}))
 
 (defn- alternation? [term] (str/includes? term "|"))
 
@@ -95,9 +110,10 @@
       (bad (str "a link type is one of " (str/join ", " (sort link-types)))))
     (when (< (count (str/trim (or id ""))) 4)
       (bad "a link term names an entry by four or more characters of its id"))
-    (fn [row] (boolean (some (fn [[t other]] (and (or (nil? type) (= type t))
-                                                  (str/starts-with? other id)))
-                             (:links row))))))
+    (reading #{:links}
+             (fn [row] (boolean (some (fn [[t other]] (and (or (nil? type) (= type t))
+                                                           (str/starts-with? other id)))
+                                      (:links row)))))))
 
 (def usage-terms
   "The terms that read the usage counts beside the notebook."
@@ -124,7 +140,7 @@
       (try (LocalDate/parse since)
            (catch DateTimeParseException _
              (bad-term! "never-returned= takes a day as YYYY-MM-DD" term))))
-    (fn [row] (zero? (usage/returned-since (:usage row) since)))))
+    (reading #{:usage} (fn [row] (zero? (usage/returned-since (:usage row) since))))))
 
 (defn- returned-unopened-pred
   [term]
@@ -133,30 +149,31 @@
                    returned-unopened-default
                    (or (when (re-matches #"[1-9][0-9]{0,8}" n) (parse-long n))
                        (bad-term! "returned-unopened= takes a whole number of at least 1" term)))]
-    (fn [row]
-      (let [u (:usage row)]
-        (and (>= (usage/total u :returned) at-least)
-             (zero? (usage/total u :opened-after-return)))))))
+    (reading #{:usage}
+             (fn [row]
+               (let [u (:usage row)]
+                 (and (>= (usage/total u :returned) at-least)
+                      (zero? (usage/total u :opened-after-return))))))))
+
+(def ^:private flag-terms
+  "The terms that read one boolean of the row, by the key they read."
+  {"disputed" :disputed? "stale" :stale? "unsigned" :unsigned? "bad-signature" :bad-signature?
+   "unverified" :unverified? "superseded" :superseded? "retired" :retired? "missed" :missed?
+   "outdated-schema" :outdated-schema?})
 
 (defn- term-pred
   [term]
   (cond
     (alternation? term)
     (let [preds (mapv term-pred (alternatives term))]
-      (fn [row] (boolean (some #(% row) preds))))
+      (reading (into #{} (mapcat reads) preds)
+               (fn [row] (boolean (some #(% row) preds)))))
 
     (data-term? term)
-    (let [q (dq/parse term)] #(boolean (seq (dq/contexts (:data %) q))))
+    (let [q (dq/parse term)] (reading #{:data} #(boolean (seq (dq/contexts (:data %) q)))))
 
-    (= term "disputed") :disputed?
-    (= term "stale") :stale?
-    (= term "unsigned") :unsigned?
-    (= term "bad-signature") :bad-signature?
-    (= term "unverified") :unverified?
-    (= term "superseded") :superseded?
-    (= term "retired") :retired?
-    (= term "missed") :missed?
-    (= term "coverage") #(= "coverage" (get-in % [:labels "kind"]))
+    (flag-terms term) (let [k (flag-terms term)] (reading #{k} k))
+    (= term "coverage") (reading #{:labels} #(= "coverage" (get-in % [:labels "kind"])))
 
     (= "never-returned" (usage-term term)) (never-returned-pred term)
     (= "returned-unopened" (usage-term term)) (returned-unopened-pred term)
@@ -165,36 +182,35 @@
     (let [[k v] (str/split (subs term 6) #"=" 2)]
       (when (str/blank? k)
         (throw (ex-info (str "a label term needs a key: " term) {:reason :select/bad-term :term term})))
-      (if (some? v)
-        #(= v (get-in % [:labels k]))
-        #(contains? (:labels %) k)))
+      (reading #{:labels}
+               (if (some? v)
+                 #(= v (get-in % [:labels k]))
+                 #(contains? (:labels %) k))))
 
     (str/starts-with? term "schema-revision=")
-    (let [h (subs term 16)] #(= h (:schema-revision %)))
-
-    (= term "outdated-schema") :outdated-schema?
+    (let [h (subs term 16)] (reading #{:schema-revision} #(= h (:schema-revision %))))
 
     (str/starts-with? term "ticket=")
-    (let [id (subs term 7)] #(contains? (:tickets %) id))
+    (let [id (subs term 7)] (reading #{:tickets} #(contains? (:tickets %) id)))
 
     (str/starts-with? term "path=")
     (let [p (subs term 5)]
       (when (str/blank? p)
         (throw (ex-info (str "a path term needs a path: " term) {:reason :select/bad-term :term term})))
-      (fn [row] (boolean (some #(paths/same-file? % p) (:paths row)))))
+      (reading #{:paths} (fn [row] (boolean (some #(paths/same-file? % p) (:paths row))))))
 
     (or (str/starts-with? term "link=") (str/starts-with? term "link:"))
     (link-pred term)
 
     (str/starts-with? term "actor=")
-    (let [actor (subs term 6)] #(contains? (:actors %) actor))
+    (let [actor (subs term 6)] (reading #{:actors} #(contains? (:actors %) actor)))
 
     (str/includes? term "=")
     (throw (ex-info (str "unknown selector term: " term) {:reason :select/bad-term :term term}))
 
     :else
     (let [text (str/lower-case (str/replace term #"^~" ""))]
-      #(str/includes? (:haystack % "") text))))
+      (reading #{:haystack} #(str/includes? (:haystack % "") text)))))
 
 (defn- terms [selector]
   (remove #{"and" ""} (str/split (str/trim (or selector "")) #"\s+")))
@@ -250,16 +266,22 @@
         :else (recur more acc)))))
 
 (defn compile
+  "The predicate over a row that holds when every term of the selector
+   holds. It declares the row keys its terms read - see `reads` - so a
+   caller computes only those; the terms are tried in order and the first
+   that fails ends the check."
   [selector]
   (let [together (not-empty (data-terms selector))]
     (loop [[t & more] (remove #{"and"} (str/split (str/trim (or selector "")) #"\s+"))
            preds []]
       (cond
-        (nil? t) (let [preds (cond-> preds together (conj #(boolean (seq (dq/matching (:data %) together)))))]
-                   (fn [row] (every? #(% row) preds)))
+        (nil? t) (let [preds (cond-> preds
+                               together (conj (reading #{:data} #(boolean (seq (dq/matching (:data %) together))))))]
+                   (reading (into #{} (mapcat reads) preds)
+                            (fn [row] (every? #(% row) preds))))
         (str/blank? t) (recur more preds)
         (= t "not") (if-let [n (first more)]
-                      (let [p (term-pred n)] (recur (rest more) (conj preds (complement p))))
+                      (let [p (term-pred n)] (recur (rest more) (conj preds (reading (reads p) (complement p)))))
                       (throw (ex-info "`not` needs a term after it" {:reason :select/bad-term :term t})))
         ;; a positive data term is checked through `together` above
         :else (recur more (cond-> preds (not (data-term? t)) (conj (term-pred t))))))))

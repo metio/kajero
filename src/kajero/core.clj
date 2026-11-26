@@ -64,6 +64,7 @@
     {:store (if index? (index/indexed s {:refresh-ms refresh-ms :on-append (warm-on-append verifier)}) s)
      :signing signing :actors actors
      :verifier verifier
+     :citations (atom nil)
      :usage (usage/recorder (if dir (usage/file-log (usage/beside dir)) (usage/sqlite-log (:conn s))))
      :tik-status (or tik-status (when tik-root (tik/cached (tik/status-in tik-root))))}))
 
@@ -255,18 +256,39 @@
        (sort-by :at)
        vec))
 
+(defn- facts
+  "What a read may need about the entry `id`, each value computed on first
+   use and then kept for the rest of the read: `rev` is its current
+   revision, `reg` the actors file of the request, `at` the instant the
+   standing is derived for, and `counts` the usage counts when the read
+   needs them."
+  [nb reg at counts id rev]
+  (let [h (delay (derived/hash-of rev))
+        links (delay (links-of nb id))
+        all-observations (delay (observations-of nb id))
+        of-current (delay (let [rh @h] (filter #(= rh (:revision %)) (counted @all-observations))))
+        authorship (delay (store/authorship (:store nb) id))
+        state (delay (:signature (signature nb reg rev @h)))]
+    {:nb nb :id id :rev rev :counts counts
+     :hash h :links links :all-observations all-observations :of-current of-current
+     :authorship authorship :state state
+     :standing (delay (standing/derive-standing rev @of-current at))
+     :missed (delay (missed @of-current))
+     :superseded? (delay (boolean (some #(and (= "supersedes" (:type %)) (= id (:target %))) @links)))
+     :outdated-schema? (delay (boolean (when-let [{schema-entry :entry pinned :revision} (:schema rev)]
+                                         (not= pinned (some-> (current nb schema-entry) derived/hash-of)))))
+     :actors (delay (into (:actors @authorship) (map :actor) @all-observations))
+     :ticket-ids (delay (into (set (tik/ticket-ids (:evidence @authorship)))
+                              (mapcat (comp tik/ticket-ids :evidence)) @all-observations))}))
+
 (defn- view
-  [nb reg entry]
-  (let [rev (current nb entry)
-        authorship (store/authorship (:store nb) entry)
-        rev-hash (derived/hash-of rev)
-        all-observations (observations-of nb entry)
-        observations (counted all-observations)
-        of-current (filter #(= rev-hash (:revision %)) observations)
-        links (links-of nb entry)
-        state (:signature (signature nb reg rev rev-hash))]
-    {:entry entry
-     :revision rev-hash
+  [nb reg id]
+  (let [rev (current nb id)
+        f (facts nb reg (now) nil id rev)
+        state @(:state f)
+        links @(:links f)]
+    {:entry id
+     :revision @(:hash f)
      :title (:title rev)
      :body (:body rev)
      :labels (:labels rev)
@@ -277,16 +299,15 @@
      :schema (:schema rev)
      :signed? (= :verified state)
      :signature state
-     :standing (standing/derive-standing rev of-current (now))
-     :missed (missed of-current)
+     :standing @(:standing f)
+     :missed @(:missed f)
      :links (mapv #(select-keys % [:source :type :target]) links)
-     :superseded? (boolean (some #(and (= "supersedes" (:type %)) (= entry (:target %))) links))
+     :superseded? @(:superseded? f)
      :retired (:retired rev)
-     :outdated-schema? (boolean (when-let [{schema-entry :entry pinned :revision} (:schema rev)]
-                                  (not= pinned (some-> (current nb schema-entry) derived/hash-of))))
-     :corrections (corrections all-observations)
-     :actors (into (:actors authorship) (map :actor) all-observations)
-     :ticket-ids (into (set (tik/ticket-ids (:evidence authorship))) (mapcat (comp tik/ticket-ids :evidence)) all-observations)}))
+     :outdated-schema? @(:outdated-schema? f)
+     :corrections (corrections @(:all-observations f))
+     :actors @(:actors f)
+     :ticket-ids @(:ticket-ids f)}))
 
 (declare schema-users)
 
@@ -304,27 +325,47 @@
           (assoc :used-by (schema-users nb id)))
         (assoc :tickets (tickets nb (concat (revisions-of nb id) (observations-of nb id)))))))
 
+(def ^:private row-fields
+  "How each key of a search row - see kajero.select/compile - is computed
+   from the facts of one entry."
+  {:labels #(:labels (:rev %))
+   :links (fn [{:keys [id links]}]
+            (into #{} (map (fn [{:keys [source type target]}] [type (if (= id source) target source)])) @links))
+   :data #(:data (:rev %))
+   :schema-revision #(get-in (:rev %) [:schema :revision])
+   :outdated-schema? #(deref (:outdated-schema? %))
+   :actors #(deref (:actors %))
+   :tickets #(deref (:ticket-ids %))
+   :paths (fn [{:keys [rev hash]}] (derived/cited-paths @hash rev))
+   :haystack (fn [{:keys [rev hash]}] (derived/haystack @hash rev))
+   :disputed? #(:disputed? @(:standing %))
+   :stale? #(:stale? @(:standing %))
+   :missed? #(boolean (seq @(:missed %)))
+   :unsigned? #(= :unsigned @(:state %))
+   :bad-signature? #(= :bad-signature @(:state %))
+   :unverified? #(not= :verified @(:state %))
+   :superseded? #(deref (:superseded? %))
+   :retired? #(some? (:retired (:rev %)))
+   :usage (fn [{:keys [counts id]}] (when counts (usage/of-entry counts id)))})
+
+(deftype ^:private Row [facts fields ^java.util.HashMap memo]
+  clojure.lang.ILookup
+  (valAt [this k] (.valAt this k nil))
+  (valAt [_ k _]
+    (if (.containsKey memo k)
+      (.get memo k)
+      (let [compute (or (get fields k)
+                        (throw (ex-info (str "a selector read the row key " k " it did not declare")
+                                        {:reason :kajero/undeclared-row-key :key k})))
+            v (compute facts)]
+        (.put memo k v)
+        v))))
+
 (defn- row
-  [{:keys [entry labels links standing signed? superseded? retired actors ticket-ids outdated-schema? missed] :as v}]
-  {:labels labels
-   :links (into #{} (map (fn [{:keys [source type target]}]
-                           [type (if (= entry source) target source)]))
-                links)
-   :data (:data v)
-   :schema-revision (get-in v [:schema :revision])
-   :outdated-schema? outdated-schema?
-   :actors actors
-   :tickets ticket-ids
-   :paths (derived/cited-paths (:revision v) v)
-   :haystack (derived/haystack (:revision v) v)
-   :disputed? (:disputed? standing)
-   :stale? (:stale? standing)
-   :missed? (boolean (seq missed))
-   :unsigned? (= :unsigned (:signature v))
-   :bad-signature? (= :bad-signature (:signature v))
-   :unverified? (not signed?)
-   :superseded? superseded?
-   :retired? (some? retired)})
+  "The search row of the entry facts `f`, offering only the keys of
+   `fields` and computing each the first time the selector reads it."
+  [fields f]
+  (->Row f fields (java.util.HashMap.)))
 
 (defn- live?
   "Whether the entry is not retired. Reads that list entries - search,
@@ -332,10 +373,55 @@
   [nb id]
   (nil? (:retired (current nb id))))
 
-(defn- text-of
-  "The searched text of a view, by field, as kajero.rank reads it."
-  [v]
-  (derived/search-text (:revision v) v))
+(defn first-line
+  "The first line of `body` as (first (clojure.string/split-lines body))
+   gives it, without splitting the rest of the body: nil when the body is
+   nothing but line breaks, \"\" for a nil or empty body."
+  [body]
+  (let [^String b (or body "")
+        i (.indexOf b "\n")]
+    (if (neg? i)
+      b
+      (let [line (subs b 0 (if (and (pos? i) (= \return (.charAt b (dec i)))) (dec i) i))]
+        (when-not (and (= "" line) (re-matches #"(?:\r?\n)+" b))
+          line)))))
+
+(defn- citation-input
+  "What kajero.cite/incoming reads about the entry `id`."
+  [nb id]
+  (let [rev (current nb id)
+        links (links-of nb id)]
+    {:entry id :body (:body rev) :links links :retired (:retired rev)
+     :superseded? (boolean (some #(and (= "supersedes" (:type %)) (= id (:target %))) links))}))
+
+(defn- citations
+  "How many entries cite each entry - see kajero.cite - computed once per
+   generation of the store and kept until a record changes it. The
+   generation is read before the records, so what is kept is never older
+   than the generation it is kept for. A store without generations counts
+   afresh every time."
+  [nb]
+  (let [g (store/generation (:store nb))
+        memo (:citations nb)
+        [kept-g kept] (some-> memo deref)]
+    (if (and g (= g kept-g))
+      kept
+      (let [c (cite/incoming (map #(citation-input nb %) (entry-ids nb)))]
+        (when (and g memo) (reset! memo [g c]))
+        c))))
+
+(defn- summary
+  "The search summary of one returned entry."
+  [f terms compiled data-terms scored]
+  (let [{:keys [id rev]} f
+        v (cond-> {:entry id :revision @(:hash f) :title (:title rev) :labels (:labels rev) :at (:at rev)
+                   :standing @(:standing f) :signature @(:state f)}
+            (seq terms) (assoc :score (:score scored) :citations (:citations scored) :rank (:rank scored)
+                               :matches (rank/matches-compiled (:text scored) compiled)))]
+    (-> (select-keys v [:entry :revision :title :labels :at :standing :signature :score :citations :rank :matches])
+        (cond-> (:retired rev) (assoc :retired (:retired rev))
+                data-terms (assoc :rows (dq/matching (:data rev) data-terms)))
+        (assoc :summary (first-line (:body rev))))))
 
 (defn search
   "Summaries of the entries the selector picks. With text terms, each
@@ -349,34 +435,52 @@
    together - see kajero.data-query. Retired entries are left out unless the selector names `retired`.
    A never-returned or returned-unopened term reads the usage counts, and
    refuses with :kajero/usage-unreadable when they can not be read. A
-   search counts nothing; search! does."
-  [nb selector]
-  (let [pred (cond-> (select/compile selector)
-               (not (select/names? selector "retired")) (every-pred (complement :retired?)))
-        counts (when (select/reads-usage? selector) (usage/counts (:usage nb)))
-        row-of (if counts (fn [v] (assoc (row v) :usage (usage/of-entry counts (:entry v)))) row)
-        terms (select/text-terms selector)
-        data-terms (not-empty (select/data-terms selector))
-        reg (registry nb)
-        views (mapv #(view nb reg %) (entry-ids nb))
-        citations (when (seq terms) (cite/incoming views))
-        ranked (fn [v] (if (seq terms)
-                         (let [text (text-of v)
-                               score (rank/score text terms)
-                               cited (get citations (:entry v) 0)]
-                           (assoc v :score score :citations cited :rank (+ score (cite/boost cited))
-                                  :matches (rank/matches text terms)))
-                         v))]
-    (->> views
-         (filter (comp pred row-of))
-         (map ranked)
-         (sort (fn [x y] (let [by-rank (compare (:rank y 0) (:rank x 0))]
-                           (if (zero? by-rank) (compare (:at y) (:at x)) by-rank))))
-         (mapv (fn [v]
-                 (-> (select-keys v [:entry :revision :title :labels :at :standing :signature :score :citations :rank :matches])
-                     (cond-> (:retired v) (assoc :retired (:retired v))
-                             data-terms (assoc :rows (dq/matching (:data v) data-terms)))
-                     (assoc :summary (first (str/split-lines (or (:body v) ""))))))))))
+   search counts nothing; search! does.
+
+   Only the row keys the selector reads are computed for an entry, and the
+   standing, signature and matches only for the entries returned; :limit
+   returns the first that many. Every signature a term judges, and every
+   signature a summary shows, is judged under the actors file read once
+   for the search."
+  ([nb selector] (search nb selector nil))
+  ([nb selector {:keys [limit]}]
+   (let [retired? (select/names? selector "retired")
+         pred (select/compile selector)
+         fields (select-keys row-fields (cond-> (select/reads pred) (not retired?) (conj :retired?)))
+         counts (when (select/reads-usage? selector) (usage/counts (:usage nb)))
+         terms (select/text-terms selector)
+         compiled (when (seq terms) (rank/compile-terms terms))
+         data-terms (not-empty (select/data-terms selector))
+         reg (registry nb)
+         at (now)
+         matched (into []
+                       (keep (fn [id]
+                               (let [f (facts nb reg at counts id (current nb id))
+                                     r (row fields f)]
+                                 (when (and (or retired? (not (:retired? r))) (pred r))
+                                   f))))
+                       (entry-ids nb))
+         cited (when (seq terms) (citations nb))
+         scored (mapv (fn [{:keys [id rev hash] :as f}]
+                        (if (seq terms)
+                          (let [text (derived/search-text @hash rev)
+                                score (rank/score-compiled text compiled)
+                                n (get cited id 0)]
+                            {:facts f :at (:at rev) :text text :score score :citations n
+                             :rank (+ score (cite/boost n))})
+                          {:facts f :at (:at rev)}))
+                      matched)]
+     (->> scored
+          (sort (fn [x y] (let [by-rank (compare (:rank y 0) (:rank x 0))]
+                            (if (zero? by-rank) (compare (:at y) (:at x)) by-rank))))
+          (#(if limit (take limit %) %))
+          (mapv #(summary (:facts %) terms compiled data-terms %))))))
+
+(defn recent
+  "The `n` most recently changed entries that are not retired, summarised
+   as a search without terms summarises them."
+  [nb n]
+  (search nb "" {:limit n}))
 
 (defn search!
   "The search, counting that it returned its entries, for `session` when
