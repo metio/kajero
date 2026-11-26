@@ -32,7 +32,8 @@
   1000)
 
 (def ^:private empty-state
-  {:entries {} :links {} :link-hashes #{} :pages [] :page-hashes #{} :cursor nil :refreshed nil})
+  {:entries {} :links {} :link-hashes #{} :pages [] :page-hashes #{} :cursor nil :refreshed nil
+   :generation 0})
 
 (def ^:private empty-entry
   {:head nil :authorship {:actors #{} :evidence #{}} :observations [] :observation-hashes #{}})
@@ -109,6 +110,7 @@
   [{:keys [inner state]}]
   (let [{:keys [cursor records]} (store/changes inner (:cursor @state))]
     (swap! state (fn [s] (-> (reduce add-record s records)
+                             (cond-> (seq records) (update :generation inc))
                              (assoc :cursor cursor :refreshed (System/nanoTime)))))
     nil))
 
@@ -149,7 +151,7 @@
                      (refresh! this))
                    (throw e)))]
       (let [held (assoc rec :sig sig)]
-        (swap! state add-record [kind held])
+        (swap! state #(-> % (add-record [kind held]) (update :generation inc)))
         (when on-append
           ;; the record has landed, so a failure here must not report the
           ;; write as failed; what it would have computed is computed on read
@@ -158,6 +160,8 @@
                  (binding [*out* *err*]
                    (println "kajero: values of a written record not computed -" (ex-message e)))))))
       h))
+  store/Generation
+  (generation [this] (:generation (held this)))
   store/Summary
   (head [this entry]
     (or (get-in (held this) [:entries entry :head])

@@ -55,6 +55,16 @@
   (head [store entry] (peek (revisions store entry)))
   (authorship [store entry] (summarize (revisions store entry))))
 
+(defprotocol Generation
+  (generation [store]
+    "A number that grows whenever the records the store answers with
+     change, so a value derived from all of them can be kept until it
+     does; nil for a store that does not count its changes."))
+
+(extend-protocol Generation
+  Object
+  (generation [_] nil))
+
 (defn- seq-taken!
   [rec]
   (throw (ex-info "the base is not the current revision"

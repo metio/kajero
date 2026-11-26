@@ -52,14 +52,17 @@
                to)]
     (str (when (pos? from) "…") (one-line (subs text from to)) (when (< to (count text)) "…"))))
 
-(defn matches
-  "For each term, where it matched first: {:term :field :snippet}, the field
-   being the most telling one that holds it. A term found nowhere has no
-   entry. `text` maps each field to its string."
-  [text terms]
-  (vec (for [term terms
-             :let [p (pattern term)
-                   hit (some (fn [[field _]]
+(defn compile-terms
+  "The terms with their patterns, compiled once for every entry a search
+   ranks: [[term pattern] ...]."
+  [terms]
+  (mapv (juxt identity pattern) terms))
+
+(defn matches-compiled
+  "matches over terms compiled by compile-terms."
+  [text compiled]
+  (vec (for [[term p] compiled
+             :let [hit (some (fn [[field _]]
                                (when-let [o (first (occurrences p (get text field "")))]
                                  [field o]))
                              fields)]
@@ -67,11 +70,22 @@
              :let [[field o] hit]]
          {:term term :field (name field) :snippet (snippet (get text field "") o)})))
 
+(defn score-compiled
+  "score over terms compiled by compile-terms."
+  [text compiled]
+  (reduce + 0 (for [[_ p] compiled
+                    [field weight] fields]
+                (* weight (min repeat-cap (count (occurrences p (get text field ""))))))))
+
+(defn matches
+  "For each term, where it matched first: {:term :field :snippet}, the field
+   being the most telling one that holds it. A term found nowhere has no
+   entry. `text` maps each field to its string."
+  [text terms]
+  (matches-compiled text (compile-terms terms)))
+
 (defn score
   "How well the terms match `text`: per term and field, the field's weight
    times its matches up to the cap."
   [text terms]
-  (reduce + 0 (for [term terms
-                    :let [p (pattern term)]
-                    [field weight] fields]
-                (* weight (min repeat-cap (count (occurrences p (get text field ""))))))))
+  (score-compiled text (compile-terms terms)))

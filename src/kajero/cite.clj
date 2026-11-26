@@ -14,8 +14,9 @@
    current revision is read, so a reference removed in a later revision
    stops counting and earlier revisions of one entry never add up.
 
-   Nothing here is stored: the counts are recomputed from the revisions and
-   links on every search."
+   Nothing here is stored: the counts are derived from the revisions and
+   links, and a notebook keeps them in memory only until the next record
+   lands - see kajero.core/citations."
   (:require [clojure.string :as str]))
 
 (def max-boost

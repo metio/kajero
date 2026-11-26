@@ -304,7 +304,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
                           (when-not (str/blank? intro) [:p.meta (first (str/split-lines intro))])])]
             [:p.empty "No pages yet. Search for a selector and save the view as a page."])
           [:h2 "Recently changed"]
-          (let [recent (take 12 (k/search nb ""))]
+          (let [recent (k/recent nb 12)]
             (if (seq recent) (map #(sheet nb % false) recent) [:p.empty "The notebook is empty."]))))
 
 (defn- full-entries [nb selector]
