@@ -172,6 +172,18 @@ Both stores create files and rows once and never change them. Two writers
 landing a revision with the same number are told apart by the store itself,
 and the second is refused.
 
+A running notebook holds an in-memory index in front of its store: the
+current revision of every entry, the actors and evidence of all its
+revisions, its observations, every link by source and target, and every
+page. Searches, the label counts and the entry pages read the index; the
+history of an entry is read from the store. A write goes to the store
+first and joins the index once it landed, so the store alone decides
+whether a revision with a taken number is refused. Records another process
+writes - the command line, a `git pull` of a flat-file notebook, a second
+server - appear within a second, when a read finds the index older than
+that and re-lists the store. A record file read before the `.sig` beside it
+was written is read again once the signature appears.
+
 ## Selectors
 
 Selectors use the grammar of tik's `--where`: whitespace-separated terms, all

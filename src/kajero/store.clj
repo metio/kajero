@@ -30,6 +30,31 @@
      ex-info {:reason :kajero/stale-base}, so two writers building on the
      same revision can not both land."))
 
+(defprotocol Feed
+  (changes [store cursor]
+    "The records appended since `cursor`, by this process or any other, as
+     {:cursor c :records [[kind record] ...]}. A nil cursor asks for every
+     record; pass the returned :cursor to the next call. Records come in
+     the order they were appended where the store knows it, and a record
+     may be reported again, so a reader keeps each one once by its hash."))
+
+(defprotocol Summary
+  (head [store entry] "The entry's current revision, or nil.")
+  (authorship [store entry]
+    "{:actors #{...} :evidence #{...}}: the actors and the evidence items of
+     every revision of the entry."))
+
+(defn summarize
+  "The authorship of `revisions`, as Summary/authorship answers it."
+  [revisions]
+  {:actors (into #{} (map :actor) revisions)
+   :evidence (into #{} (mapcat :evidence) revisions)})
+
+(extend-protocol Summary
+  Object
+  (head [store entry] (peek (revisions store entry)))
+  (authorship [store entry] (summarize (revisions store entry))))
+
 (defn- seq-taken!
   [rec]
   (throw (ex-info "the base is not the current revision"
@@ -59,19 +84,43 @@
     (.setObject ps (int (inc i)) p))
   ps)
 
+;; One connection serves every thread of the process. Each statement holds
+;; the connection's monitor while it runs, the same monitor kajero.usage
+;; holds for a transaction, so a record is never written inside somebody
+;; else's transaction and no two statements interleave on the connection.
+
 (defn- execute!
   [^Connection conn sql & params]
-  (with-open [ps (bind! (.prepareStatement conn sql) params)]
-    (.executeUpdate ps)))
+  (locking conn
+    (with-open [ps (bind! (.prepareStatement conn sql) params)]
+      (.executeUpdate ps))))
 
 (defn- query
   [^Connection conn sql & params]
-  (with-open [ps (bind! (.prepareStatement conn sql) params)
-              ^ResultSet rs (.executeQuery ps)]
-    (loop [rows []]
-      (if (.next rs)
-        (recur (conj rows {:record (.getString rs 1) :sig (when (> (.getColumnCount (.getMetaData rs)) 1) (.getBytes rs 2))}))
-        rows))))
+  (locking conn
+    (with-open [ps (bind! (.prepareStatement conn sql) params)
+                ^ResultSet rs (.executeQuery ps)]
+      (loop [rows []]
+        (if (.next rs)
+          (recur (conj rows {:record (.getString rs 1) :sig (when (> (.getColumnCount (.getMetaData rs)) 1) (.getBytes rs 2))}))
+          rows)))))
+
+(defn- query-since
+  "Rows of `table` whose rowid is above `after`, as [rowid record sig]. Rows
+   are only ever inserted, so the rowid grows with every append."
+  [^Connection conn table after]
+  (locking conn
+    (with-open [ps (bind! (.prepareStatement conn (str "SELECT rowid, record, sig FROM " table
+                                                       " WHERE rowid > ? ORDER BY rowid"))
+                          [after])
+                ^ResultSet rs (.executeQuery ps)]
+      (loop [rows []]
+        (if (.next rs)
+          (recur (conj rows [(.getLong rs 1) (.getString rs 2) (.getBytes rs 3)]))
+          rows)))))
+
+(def ^:private tables
+  {:revision "revisions" :observation "observations" :link "links" :page "pages"})
 
 (defn- read-rows
   [rows]
@@ -106,7 +155,16 @@
           (if (and (= :revision kind) (re-find #"UNIQUE" (str (ex-message e))))
             (seq-taken! rec)
             (throw e))))
-      hash)))
+      hash))
+  Feed
+  (changes [_ cursor]
+    (reduce (fn [acc [kind table]]
+              (let [rows (query-since conn table (get cursor kind 0))]
+                (-> acc
+                    (update :records into (map (fn [[_ record sig]] [kind (assoc (edn/read-string record) :sig sig)])) rows)
+                    (assoc-in [:cursor kind] (if (seq rows) (first (peek rows)) (get cursor kind 0))))))
+            {:cursor {} :records []}
+            tables)))
 
 (defn sqlite
   "The SQLite store at `path`, created when missing."
@@ -145,6 +203,63 @@
        (filter #(and (.isFile ^File %) (str/ends-with? (.getName ^File %) ".edn")))
        (sort-by #(.getName ^File %))))
 
+(def ^:private sig-grace-ms
+  "How long a record file read without a signature beside it is watched
+   for one. A writer creates the record and then its .sig, and a checkout
+   may write them in either order, so a reader can find the record first."
+  60000)
+
+(defn- names
+  [^File dir]
+  (sort (filter #(str/ends-with? % ".edn") (.list dir))))
+
+(defn- record-files
+  "[kind path] of every record file below `dir`, the path relative to it."
+  [^File dir]
+  (concat (for [e (sort (or (.list (io/file dir "entries")) (make-array String 0)))
+                [kind sub] [[:revision "revisions"] [:observation "observations"]]
+                :let [d (io/file dir "entries" e sub)]
+                :when (.isDirectory d)
+                n (names d)]
+            [kind (str "entries/" e "/" sub "/" n)])
+          (for [[kind sub] [[:link "links"] [:page "pages"]]
+                :let [d (io/file dir sub)]
+                :when (.isDirectory d)
+                n (names d)]
+            [kind (str sub "/" n)])))
+
+(defn- file-changes
+  "The records below `dir` that `cursor` does not hold yet, and the cursor
+   holding them. The cursor is {:known #{path} :unsigned {path [kind
+   first-seen-ms]}}. A record read without its signature is read again once
+   the signature appears, for sig-grace-ms after it was first seen; a reader
+   keeps the copy with the signature."
+  [^File dir cursor now-ms]
+  (let [{:keys [known unsigned] :or {known #{} unsigned {}}} cursor
+        read-new (fn [acc [kind rel]]
+                   (let [f (io/file dir rel)]
+                     (if (or (contains? known rel) (not (.isFile f)))
+                       acc
+                       (let [rec (read-file f)]
+                         (cond-> (-> acc
+                                     (update :records conj [kind rec])
+                                     (update-in [:cursor :known] conj rel))
+                           (nil? (:sig rec)) (assoc-in [:cursor :unsigned rel] [kind now-ms]))))))
+        recheck (fn [acc [rel [kind seen]]]
+                  (let [f (io/file dir rel)]
+                    (cond
+                      (.isFile (io/file (str f ".sig")))
+                      (-> acc
+                          (update :records conj [kind (read-file f)])
+                          (update-in [:cursor :unsigned] dissoc rel))
+
+                      (< (long sig-grace-ms) (- (long now-ms) (long seen)))
+                      (update-in acc [:cursor :unsigned] dissoc rel)
+
+                      :else acc)))
+        start {:records [] :cursor {:known known :unsigned unsigned}}]
+    (reduce read-new (reduce recheck start unsigned) (record-files dir))))
+
 (defn- file-name
   [kind rec hash]
   (if (= :revision kind) (format "%08d.edn" (:seq rec)) (str hash ".edn")))
@@ -178,7 +293,10 @@
         (catch FileAlreadyExistsException e
           (if (= :revision kind) (seq-taken! rec) (throw e))))
       (when sig (create-new! (io/file (str f ".sig")) sig))
-      hash)))
+      hash))
+  Feed
+  (changes [_ cursor]
+    (file-changes dir cursor (System/currentTimeMillis))))
 
 (defn files
   "The flat-file store in directory `dir`, created when missing."

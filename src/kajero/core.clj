@@ -13,6 +13,8 @@
             [kajero.cite :as cite]
             [kajero.data :as data]
             [kajero.data-query :as dq]
+            [kajero.derived :as derived]
+            [kajero.index :as index]
             [kajero.migrate :as migrate]
             [kajero.paths :as paths]
             [kajero.rank :as rank]
@@ -39,12 +41,17 @@
    tik store whose tickets evidence may cite as tik:<id>. :tik-status replaces
    the lookup of a ticket, for tests.
 
+   The store sits behind an in-memory index - see kajero.index - whose
+   :refresh-ms says how old it may get before a read picks up what other
+   processes wrote; :index? false reads the store directly.
+
    Searches and reads made through search! and open! are counted beside
    the notebook - see kajero.usage: in the database's usage tables, or in
    <dir>.usage.edn next to a flat-file notebook."
-  [{:keys [signing actors tik-root tik-status dir] :or {signing :optional} :as opts}]
+  [{:keys [signing actors tik-root tik-status dir refresh-ms index?] :or {signing :optional index? true} :as opts}]
   (let [s (store/open opts)]
-    {:store s :signing signing :actors actors
+    {:store (if index? (index/indexed s {:refresh-ms refresh-ms}) s)
+     :signing signing :actors actors
      :verifier (verify/verifier actors)
      :usage (usage/recorder (if dir (usage/file-log (usage/beside dir)) (usage/sqlite-log (:conn s))))
      :tik-status (or tik-status (when tik-root (tik/status-in tik-root)))}))
@@ -140,7 +147,7 @@
 (defn current
   "The entry's latest revision, or nil."
   [nb entry]
-  (peek (revisions-of nb entry)))
+  (store/head (:store nb) entry))
 
 (defn- entry-ids [nb] (store/entries (:store nb)))
 
@@ -158,7 +165,7 @@
    start; a read that comes first judges what it needs itself."
   [nb]
   (let [s (:store nb)]
-    (verify/warm! (:verifier nb) (keep #(peek (store/revisions s %)) (store/entries s)))))
+    (verify/warm! (:verifier nb) (keep #(store/head s %) (store/entries s)))))
 
 (defn verify-in-background!
   "Runs verify-current! on a daemon thread, so a server answers while the
@@ -181,14 +188,14 @@
    :corrected-by, :correction (the later outcome, or withdrawn) and the
    :evidence the correction gave."
   [observations]
-  (let [by-hash (into {} (map (juxt record/hash-of identity)) observations)]
+  (let [by-hash (into {} (map (juxt derived/hash-of identity)) observations)]
     (->> observations
          (filter :corrects)
          (keep (fn [c]
                  (when-let [o (by-hash (:corrects c))]
                    {:observation (:corrects c) :outcome (:outcome o) :revision (:revision o)
                     :actor (:actor o) :at (:at o)
-                    :corrected-by (record/hash-of c) :correction (:outcome c)
+                    :corrected-by (derived/hash-of c) :correction (:outcome c)
                     :corrector (:actor c) :corrected-at (:at c) :evidence (:evidence c)})))
          (sort-by :at)
          vec)))
@@ -198,7 +205,7 @@
    corrected by a later observation."
   [observations]
   (let [corrected (into #{} (keep :corrects) observations)]
-    (remove #(or (= "withdrawn" (:outcome %)) (corrected (record/hash-of %))) observations)))
+    (remove #(or (= "withdrawn" (:outcome %)) (corrected (derived/hash-of %))) observations)))
 
 (defn- missed
   "The searches that did not find the revision although it held the answer:
@@ -213,9 +220,9 @@
 
 (defn- view
   [nb entry]
-  (let [revisions (revisions-of nb entry)
-        rev (peek revisions)
-        rev-hash (record/hash-of rev)
+  (let [rev (current nb entry)
+        authorship (store/authorship (:store nb) entry)
+        rev-hash (derived/hash-of rev)
         all-observations (observations-of nb entry)
         observations (counted all-observations)
         of-current (filter #(= rev-hash (:revision %)) observations)
@@ -239,10 +246,10 @@
      :superseded? (boolean (some #(and (= "supersedes" (:type %)) (= entry (:target %))) links))
      :retired (:retired rev)
      :outdated-schema? (boolean (when-let [{schema-entry :entry pinned :revision} (:schema rev)]
-                                  (not= pinned (some-> (peek (revisions-of nb schema-entry)) record/hash-of))))
+                                  (not= pinned (some-> (current nb schema-entry) derived/hash-of))))
      :corrections (corrections all-observations)
-     :actors (into #{} (map :actor) (concat revisions all-observations))
-     :ticket-ids (into #{} (mapcat (comp tik/ticket-ids :evidence)) (concat revisions all-observations))}))
+     :actors (into (:actors authorship) (map :actor) all-observations)
+     :ticket-ids (into (set (tik/ticket-ids (:evidence authorship))) (mapcat (comp tik/ticket-ids :evidence)) all-observations)}))
 
 (declare schema-users)
 
@@ -271,9 +278,11 @@
    :outdated-schema? outdated-schema?
    :actors actors
    :tickets ticket-ids
-   :paths (into (paths/cited title) (mapcat paths/cited) (cons body (:evidence v)))
-   :haystack (str/lower-case (str/join " " (concat [title body (some-> (:data v) pr-str)]
-                                                   (map #(str/join "=" %) labels))))
+   :paths (derived/of-revision :paths (:revision v)
+                               #(into (paths/cited title) (mapcat paths/cited) (cons body (:evidence v))))
+   :haystack (derived/of-revision :haystack (:revision v)
+                                  #(str/lower-case (str/join " " (concat [title body (some-> (:data v) pr-str)]
+                                                                         (map (fn [l] (str/join "=" l)) labels)))))
    :disputed? (:disputed? standing)
    :stale? (:stale? standing)
    :missed? (boolean (seq missed))
@@ -292,10 +301,11 @@
 (defn- text-of
   "The searched text of a view, by field, as kajero.rank reads it."
   [v]
-  {:title (or (:title v) "")
-   :labels (str/join " " (map #(str/join "=" %) (sort (:labels v))))
-   :body (or (:body v) "")
-   :data (if (some? (:data v)) (pr-str (:data v)) "")})
+  (derived/of-revision :text (:revision v)
+                       #(hash-map :title (or (:title v) "")
+                                  :labels (str/join " " (map (fn [l] (str/join "=" l)) (sort (:labels v))))
+                                  :body (or (:body v) "")
+                                  :data (if (some? (:data v)) (pr-str (:data v)) ""))))
 
 (defn search
   "Summaries of the entries the selector picks. With text terms, each
