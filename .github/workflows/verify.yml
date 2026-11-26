@@ -18,10 +18,32 @@ jobs:
     uses: metio/ci/.github/workflows/clojure.yml@d1d58ce5b2b4dbac322bedd78203810def514bcc # 2026.11.15184511
     with:
       kondo-paths: src test
+  native:
+    # The uberjar and the native binary the release publishes, built and
+    # smoke-tested the way the release does it, so a change that breaks
+    # either fails here rather than after the merge.
+    name: Native
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: metio/ci/breto@4ffe6343c7dad75502de503165b853f1959afc8c # 2026.11.21090200
+        with:
+          registries: github:metio/toolchains
+      - name: Install the static zlib the native binary links
+        run: sudo apt-get install --yes zlib1g-dev
+      - name: Build the uberjar and the native binary
+        run: sh dev/build-native.sh
+      - name: Smoke-test the native binary
+        run: bb dev/smoke.clj target/kajero
+      - name: Smoke-test the uberjar
+        run: bb dev/smoke.clj java --enable-native-access=ALL-UNNAMED -jar target/kajero.jar
   verify:
     # The single required check: new jobs only need to be listed here.
     name: Verify
-    needs: [clojure]
+    needs: [clojure, native]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: The kajero Authors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+# Least privilege at the top; only the publish job raises what it needs.
+permissions:
+  contents: read
+# Serialize releases: release-notes reads tags and gh release create writes
+# one, so overlapping runs would race. Never cancel a release in flight.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      needed: ${{ steps.gate.outputs.needed }}
+      version: ${{ steps.version.outputs.version }}
+      previous: ${{ steps.gate.outputs.last }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # needs-release reads the tags and the history
+          persist-credentials: false
+      - id: gate
+        # Release only when something that ends up in the jar or the binary
+        # moved since the last tag: the code, its dependencies, the build and
+        # the toolchain that compiles it.
+        uses: metio/ci/needs-release@4ffe6343c7dad75502de503165b853f1959afc8c # 2026.11.21090200
+        with:
+          paths: deps.edn build.clj src dev/build-native.sh .breto.edn
+      - id: version
+        if: steps.gate.outputs.needed == 'true'
+        # Calendar version (YYYY.M.D + UTC time of day), shared across every metio artifact.
+        uses: metio/ci/calver@4ffe6343c7dad75502de503165b853f1959afc8c # 2026.11.21090200
+
+  build:
+    name: Build
+    needs: prepare
+    if: needs.prepare.outputs.needed == 'true'
+    runs-on: ubuntu-latest
+    # The uberjar, native-image and two smoke runs. This job runs the build
+    # and every dependency's code, so it holds no token that can write.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: metio/ci/breto@4ffe6343c7dad75502de503165b853f1959afc8c # 2026.11.21090200
+        with:
+          registries: github:metio/toolchains
+      - name: Install the static zlib the native binary links
+        run: sudo apt-get install --yes zlib1g-dev
+      - name: Build the uberjar and the native binary
+        run: sh dev/build-native.sh
+      - name: Smoke-test the native binary
+        run: bb dev/smoke.clj target/kajero
+      - name: Smoke-test the uberjar
+        run: bb dev/smoke.clj java --enable-native-access=ALL-UNNAMED -jar target/kajero.jar
+      - name: Assemble the release artifacts
+        # The uberjar runs on any OS with a JDK 25; the native binary is
+        # named for the one platform it runs on, since GraalVM cannot
+        # cross-compile.
+        run: |
+          mkdir -p dist
+          cp target/kajero.jar dist/kajero.jar
+          cp target/kajero dist/kajero-linux-amd64-glibc
+          ( cd dist && sha256sum kajero.jar kajero-linux-amd64-glibc > SHA256SUMS )
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish
+    needs: [prepare, build]
+    if: needs.prepare.outputs.needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the GitHub release and its tag
+      id-token: write # cosign keyless signing of the checksums via Fulcio OIDC
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # release-notes reads the tags and the history
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dist
+          path: dist
+      - name: Check the artifacts against their checksums
+        run: cd dist && sha256sum --check --strict SHA256SUMS
+      - name: Sign the checksums (cosign keyless)
+        uses: metio/ci/cosign-sign-blob@4ffe6343c7dad75502de503165b853f1959afc8c # 2026.11.21090200
+        with:
+          file: dist/SHA256SUMS
+      - id: notes
+        uses: metio/ci/release-notes@4ffe6343c7dad75502de503165b853f1959afc8c # 2026.11.21090200
+        with:
+          version: ${{ needs.prepare.outputs.version }}
+          previous: ${{ needs.prepare.outputs.previous }}
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          NOTES: ${{ steps.notes.outputs.file }}
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --notes-file "$NOTES" \
+            dist/kajero.jar \
+            dist/kajero-linux-amd64-glibc \
+            dist/SHA256SUMS \
+            dist/SHA256SUMS.bundle
