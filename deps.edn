@@ -4,6 +4,9 @@
  :deps {org.clojure/clojure {:mvn/version "1.12.6"}
         ;; tik.sign signs and verifies revisions with the actors' tik keys
         io.github.metio/tik {:git/sha "8447157bce1a8d3a6f3222dbff796b887427633b"}
+        ;; briko.ssh-sign and briko.sshsig sign and verify records,
+        ;; checkpoints and skill manifests
+        io.github.metio/briko {:git/sha "3e8fc5431a6d5f2e7b70ac62994065784bbc5b16"}
         ;; kajero.mcp and kajero.web read and write JSON with it; declared
         ;; at the version tik brings, so the resolution stays the same
         cheshire/cheshire {:mvn/version "6.2.0"}

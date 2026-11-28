@@ -22,7 +22,7 @@
             [kajero.test-temp :as temp]
             [kajero.verify :as verify]
             [kajero.web :as web]
-            [tik.sign :as sign])
+            [briko.ssh-sign :as sign])
   (:import (java.io File)
            (java.util Random)))
 
