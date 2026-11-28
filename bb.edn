@@ -13,7 +13,7 @@
         :task (shell "clojure -T:build uber")}
   build-native {:doc "The single-binary kajero (GraalVM native-image -> target/kajero)"
                 :task (shell "sh dev/build-native.sh")}
-  smoke {:doc "Smoke-test a built kajero (bb smoke, or bb smoke java -jar target/kajero.jar)"
+  smoke {:doc "Smoke-test a built kajero (bb smoke, or bb smoke java --enable-native-access=ALL-UNNAMED -jar target/kajero.jar)"
          :task (apply shell "bb dev/smoke.clj" *command-line-args*)}
   kajero {:doc "Run the CLI (bb kajero search 'label:kind=gotcha')"
           :task (apply shell "clojure -M:run" *command-line-args*)}}}
