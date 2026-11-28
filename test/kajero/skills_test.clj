@@ -156,6 +156,9 @@
           (is (= :bad-manifest (:reason (skills/verify-entry actors malformed))) why)))
       (testing "an unknown manifest format fails as such"
         (is (= :wrong-format (:reason (skills/verify-entry actors (assoc-in signed [:_meta skills/meta-key :format] "skill-manifest-v2"))))))
+      (testing "a signed claim without an actor or a signature fails as a bad signature"
+        (is (= :bad-signature (:reason (skills/verify-entry actors (update-in signed [:_meta skills/meta-key] dissoc :signature)))))
+        (is (= :bad-signature (:reason (skills/verify-entry actors (update-in signed [:_meta skills/meta-key] dissoc :actor))))))
       (testing "another actor's claim fails"
         (is (= :bad-signature (:reason (skills/verify-entry actors (assoc-in signed [:_meta skills/meta-key :actor] "seb"))))))
       (testing "a key the actors file does not hold fails"

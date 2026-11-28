@@ -24,8 +24,9 @@
    - the command line runs search and labels, and an argument beginning
      with -D or -XX: reaches it instead of the runtime;
    - a SQLite notebook takes a signed write from the command line, checks
-     its tik: citation with `tik status` (a stub on PATH) and refuses one
-     tik does not know;
+     its tik: citation against a file-backed and a SQLite-backed tik store
+     (copies of dev/smoke-tik), shows the ticket's verified stage, and
+     refuses a citation of a ticket the store does not hold;
    - a revision changed on disk after it was signed reads as bad-signature;
    - serve signs a checkpoint with a key of its own and reports it over
      MCP, a SIGTERM ends it with 143 after its shutdown hooks signed a last
@@ -313,33 +314,32 @@
       (let [{:keys [exit out err]} @(run {:out :string :err :string} "labels")]
         (check! (and (zero? exit) (str/includes? out "smoke")) "the CLI labels lists system=smoke" err))
         ;; a SQLite notebook bound to a tik store, written from the command
-        ;; line: a stub tik on PATH knows one ticket and no other
-      (let [bin (fs/create-dirs (fs/path tmp "bin"))
-            stub (fs/path bin "tik")
-            known "00000000-0000-4000-8000-000000000001"
-            unknown "00000000-0000-4000-8000-000000000002"
-            sqlite (-> env
-                       (dissoc "KAJERO_DIR")
-                       (assoc "KAJERO_DB" (str (fs/path tmp "notes.db"))
-                              "KAJERO_TIK_ROOT" (str tmp)
-                              "PATH" (str bin java.io.File/pathSeparator (System/getenv "PATH"))))
-            write (fn [ticket]
-                    @(run {:env sqlite :out :string :err :string}
-                          "write" "SQLite smoke entry" "--body" "On SQLite." "--label" "kind=fact"
-                          "--label" "system=smoke" "--evidence" (str "tik:" ticket)))]
-        (spit (str stub) (str "#!/bin/sh\n"
-                              "[ \"$2\" = " known " ] || exit 1\n"
-                              "echo '{:title \"Smoke ticket\" :current [:open] :rules {:process :change}}'\n"))
-        (fs/set-posix-file-permissions stub "rwx------")
-        (let [{:keys [exit out err]} (write known)
-              id (when (zero? exit) (:entry (edn/read-string out)))]
-          (check! (string? id) "the CLI wrote to SQLite citing a ticket tik knows" err)
-          (let [{:keys [out err]} @(run {:env sqlite :out :string :err :string} "get" id)
-                got (edn/read-string out)]
-            (check! (= :verified (keyword (name (:signature got)))) "it reads from SQLite as verified" err)
-            (check! (= ["Smoke ticket"] (map :title (:tickets got))) "the entry shows the ticket tik status read")))
-        (let [{:keys [exit err]} (write unknown)]
-          (check! (and (= 1 exit) (str/includes? err unknown)) "a citation of a ticket tik does not know is refused")))
+        ;; line: copies of the tik stores in dev/smoke-tik, one file-backed
+        ;; and one SQLite-backed, each holding one signed ticket at :done
+      (doseq [[backend known] [["file" "42dc530c-ef7d-41e4-a14c-45c55e3b29e6"]
+                               ["sqlite" "6eaaeb75-4581-4447-a636-1f57f1c7ba15"]]]
+        (let [store (fs/path tmp (str "tik-" backend))
+              _ (fs/copy-tree (fs/path "dev" "smoke-tik" backend) store)
+              unknown "00000000-0000-4000-8000-000000000002"
+              sqlite (-> env
+                         (dissoc "KAJERO_DIR")
+                         (assoc "KAJERO_DB" (str (fs/path tmp (str "notes-" backend ".db")))
+                                "KAJERO_TIK_ROOT" (str store)))
+              write (fn [ticket]
+                      @(run {:env sqlite :out :string :err :string}
+                            "write" "SQLite smoke entry" "--body" "On SQLite." "--label" "kind=fact"
+                            "--label" "system=smoke" "--evidence" (str "tik:" ticket)))
+              what (str "(" backend " tik store)")]
+          (let [{:keys [exit out err]} (write known)
+                id (when (zero? exit) (:entry (edn/read-string out)))]
+            (check! (string? id) "the CLI wrote to SQLite citing a ticket tik knows" what err)
+            (let [{:keys [out err]} @(run {:env sqlite :out :string :err :string} "get" id)
+                  got (edn/read-string out)]
+              (check! (= :verified (keyword (name (:signature got)))) "it reads from SQLite as verified" what err)
+              (check! (= [{:ticket known :title "Smoke ticket" :current ["done"] :process "citation"}] (:tickets got))
+                      "the entry shows the ticket's title and the stage tik derives, verified" what (pr-str (:tickets got)))))
+          (let [{:keys [exit err]} (write unknown)]
+            (check! (and (= 1 exit) (str/includes? err unknown)) "a citation of a ticket tik does not know is refused" what))))
         ;; a revision changed after it was signed
       (let [file (fs/file notes "entries" entry "revisions" "00000001.edn")]
         (spit file (str/replace (slurp file) "Smoke test entry" "Tampered entry"))

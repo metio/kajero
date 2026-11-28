@@ -7,3 +7,5 @@
 target/
 *.db
 /.eastwood
+# the SQLite-backed tik store the smoke run cites
+!/dev/smoke-tik/sqlite/tik.db

@@ -4,7 +4,10 @@
  :deps {org.clojure/clojure {:mvn/version "1.12.6"}
         ;; briko signs and verifies records, checkpoints and skill
         ;; manifests, answers the MCP protocol and reads untrusted EDN
-        io.github.metio/briko {:git/sha "3e8fc5431a6d5f2e7b70ac62994065784bbc5b16"}
+        io.github.metio/briko {:git/sha "3d6038cbfa4ae694999b9ecf45a529c29a3275c1"}
+        ;; kajero.tik derives and verifies cited tickets in process through
+        ;; tik.api; kajero.tik-store-test builds its tik stores with tik.cli
+        io.github.metio/tik {:git/sha "85d61ce032712e58da24e09ecc444d840901ca61"}
         ;; kajero.mcp, kajero.web and briko.mcp read and write JSON with
         ;; it; cheshire and jackson-core at the versions briko's tests
         ;; declare, so kajero runs briko.mcp on what briko tested
