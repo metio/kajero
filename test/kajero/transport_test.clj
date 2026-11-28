@@ -47,6 +47,8 @@
      (legacy (tool-call 5 "kajero_search" {:selector "label:kind=fact"}))
      (legacy (tool-call 6 "kajero_get" {:entry "00000000-0000-0000-0000-000000000000"}))
      (legacy (tool-call 7 "no_such_tool" {}))
+     ;; the error message repeats the name, hidden code point and all
+     (legacy (tool-call 10 (str "no" (char 0x202E) "tool") {}))
      (legacy {:jsonrpc "2.0" :id "eight" :method "tools/call" :params {:name "kajero_labels" :arguments []}})
      [(line {:jsonrpc "2.0" :id 9 :method "tools/list" :params {:_meta modern-meta}})
       {"mcp-protocol-version" ["2026-07-28"] "mcp-method" ["tools/list"]}]

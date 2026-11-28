@@ -147,6 +147,11 @@ A request is held to the JSON-RPC and MCP rules before any tool runs:
   object, answers the JSON-RPC error -32602. A refusal by a known tool, such
   as a stale base, stays a tool result with `isError` and the reason.
 - An unknown method answers -32601 in both eras.
+- Text that is not exactly one JSON value of at most 16 MiB answers -32700
+  with the rule it broke in `data.rule` (`malformed`, `no-value`,
+  `trailing-value`, `duplicate-key`, `too-large`, ...), on stdio and on
+  `/mcp` alike. A stdio line over 16 MiB is answered without being held
+  whole, and the next line is read; `/mcp` refuses such a body with 413.
 - Text after the JSON message answers -32700; a message without
   `"jsonrpc": "2.0"`, a string method, or a string or integer id answers
   -32600; `params` that are not an object answer -32602.

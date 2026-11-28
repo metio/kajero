@@ -35,16 +35,41 @@
   (:body (web/mcp-endpoint nb {:token token :writer writer :port 7270}
                            {:method "POST" :authorization (str "Bearer " token) :body body})))
 
-(def ^:private parse-error-text
-  "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"parse error: not a JSON value\"}}")
+(defn- parse-error-text
+  "The -32700 line briko.mcp writes for a refusal with `message` and `data`."
+  [message data]
+  (str "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"parse error: " message
+       "\",\"data\":" data "}}"))
 
-(deftest text-that-is-not-one-json-value-answers-the-same-parse-error
-  (let [nb (notebook)]
-    (doseq [bad ["not json" "" "   " "{\"jsonrpc\":" "{} {}" "[1] x" "{\"a\":1}}" "'x'" "{a:1}" "[1,]" "NaN"]]
+(def ^:private malformed-at-1-1
+  (parse-error-text "the input is not valid JSON at line 1, column 1" "{\"rule\":\"malformed\",\"line\":1,\"column\":1}"))
+
+(def ^:private no-value
+  (parse-error-text "the input holds no JSON value" "{\"rule\":\"no-value\"}"))
+
+(deftest text-that-is-not-one-json-value-answers-a-parse-error-naming-the-rule
+  (let [nb (notebook)
+        trailing (parse-error-text "the input holds text after its JSON value" "{\"rule\":\"trailing-value\"}")
+        malformed-at (fn [column]
+                       (parse-error-text (str "the input is not valid JSON at line 1, column " column)
+                                         (str "{\"rule\":\"malformed\",\"line\":1,\"column\":" column "}")))]
+    (doseq [[bad expected] [["not json" malformed-at-1-1]
+                            ["" no-value]
+                            ["   " no-value]
+                            ["{\"jsonrpc\":" (malformed-at 12)]
+                            ["{} {}" trailing]
+                            ["[1] x" trailing]
+                            ["{\"a\":1}}" trailing]
+                            ["'x'" malformed-at-1-1]
+                            ["{a:1}" (malformed-at 2)]
+                            ["[1,]" (malformed-at 4)]
+                            ["NaN" (malformed-at 4)]]]
       (testing (pr-str bad)
-        (is (= {:jsonrpc "2.0" :id nil :error {:code -32700 :message "parse error: not a JSON value"}}
-               (mcp/handle nb writer bad)))
-        (is (= parse-error-text (http-body nb bad)))))))
+        (is (= expected (json/generate-string (mcp/handle nb writer bad))))
+        (is (= expected (http-body nb bad)))
+        (testing "the answer quotes none of the text"
+          (when (< 3 (count (str/trim bad)))
+            (is (not (str/includes? (get-in (json/parse-string expected) ["error" "message"]) (str/trim bad))))))))))
 
 (deftest tool-results-print-as-cheshire-prints-them
   (let [nb (notebook)
@@ -123,7 +148,8 @@
 (deftest a-raw-control-character-in-a-string-is-refused
   (let [nb (notebook)
         raw (str "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"x\":\"a" (char 1) "b\"}}")]
-    (is (= "parse error: not a JSON value" (error-message (mcp/handle nb writer raw))))
+    (is (= "parse error: the input is not valid JSON at line 1, column 63" (error-message (mcp/handle nb writer raw))))
+    (is (= {:rule "malformed" :line 1 :column 63} (get-in (mcp/handle nb writer raw) [:error :data])))
     (testing "control: the escaped character is read"
       (is (seq (get-in (mcp/handle nb writer (str/replace raw (str (char 1)) "\\u0001")) [:result :tools]))))))
 
@@ -194,7 +220,15 @@
         answers (str/split-lines out)]
     (is (= 4 (count answers)))
     (is (= 1 (get (json/parse-string (first answers)) "id")))
-    (is (= parse-error-text (nth answers 1)))
+    (is (= malformed-at-1-1 (nth answers 1)))
     (is (= 2 (get (json/parse-string (nth answers 2)) "id")))
-    (is (= "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"parse error: not a JSON value\"}}"
-           (nth answers 3)))))
+    (is (= no-value (nth answers 3)))))
+
+(deftest a-response-json-cannot-hold-answers-an-internal-error-for-its-id
+  (let [answer (json/parse-string (mcp/write-message {:jsonrpc "2.0" :id 3 :result {nil 1 "" 2}}))]
+    (is (= 3 (get answer "id")))
+    (is (= -32603 (get-in answer ["error" "code"])))
+    (is (string? (get-in answer ["error" "data" "rule"]))))
+  (testing "control: a response whose keys stay apart is written as it is"
+    (is (= "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"a\":1,\"b\":2}}"
+           (mcp/write-message {:jsonrpc "2.0" :id 3 :result {"a" 1 "b" 2}})))))
