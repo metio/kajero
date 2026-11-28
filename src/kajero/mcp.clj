@@ -24,10 +24,10 @@
    namespace supplies the methods (see server)."
   (:require [briko.mcp :as rpc]
             [cheshire.core :as json]
-            [clojure.edn :as edn]
             [clojure.string :as str]
             [kajero.checkpoint :as checkpoint]
             [kajero.core :as k]
+            [kajero.data :as data]
             [kajero.print :as kp]
             [kajero.skills :as skills]))
 
@@ -122,12 +122,6 @@
                                :dry_run {:type "boolean"}}
                   :required ["migration"]}}])
 
-(defn- read-edn
-  [s]
-  (try (edn/read-string s)
-       (catch Exception e
-         (throw (ex-info (str "the data is not EDN: " (ex-message e)) {:reason :kajero/bad-edn})))))
-
 (defn- refuse!
   [reason message data]
   (throw (ex-info message (assoc data :reason reason))))
@@ -194,10 +188,10 @@
     "kajero_labels" (k/labels nb)
     "kajero_checkpoint" (k/checkpoint-status nb)
     "kajero_write" (k/write! nb (merge writer {:title title :body body :labels labels :evidence evidence}
-                                       (when data_edn {:data (read-edn data_edn)})))
+                                       (when data_edn {:data (data/read-edn data_edn)})))
     "kajero_revise" (k/revise! nb entry (merge writer {:base base :title title :body body
                                                        :labels (not-empty labels) :evidence evidence}
-                                               (when data_edn {:data (read-edn data_edn)})))
+                                               (when data_edn {:data (data/read-edn data_edn)})))
     "kajero_observe" (k/observe! nb entry (merge writer {:outcome outcome :revision revision :evidence evidence
                                                          :corrects corrects :selector selector}))
     "kajero_observe_many" (observe-many nb writer observations)

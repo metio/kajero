@@ -1,7 +1,8 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.data-test
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
             [kajero.data :as data]
             [kajero.test-temp :as temp]))
@@ -55,3 +56,18 @@
   (is (= [:b :a] (data/columns [{:b 1} {:a 2}] nil)))
   (is (data/table? nodes))
   (is (not (data/table? {:a 1}))))
+
+(deftest client-data-is-read-as-bounded-edn
+  (testing "plain data, #inst and #uuid read as clojure.edn reads them"
+    (is (= [{:host "w-1" :cpus 8 :tags #{:a}}] (data/read-edn "[{:host \"w-1\" :cpus 8 :tags #{:a}}]")))
+    (is (= #inst "2026-11-28T00:00:00Z" (data/read-edn "#inst \"2026-11-28T00:00:00Z\"")))
+    (is (= #uuid "8ba54606-7b76-4bd3-8d46-21ea3c21f37b" (data/read-edn "#uuid \"8ba54606-7b76-4bd3-8d46-21ea3c21f37b\""))))
+  (testing "refused as bad EDN"
+    (doseq [[why text] [["nesting deeper than 64" (str (str/join (repeat 100000 "[")) (str/join (repeat 100000 "]")))]
+                        ["a tag without a reader" "#kajero/x 1"]
+                        ["a second form" "1 2"]
+                        ["no form" ""]
+                        ["read-eval" "#=(+ 1 2)"]
+                        ["a number literal of 101 digits" (str/join (repeat 101 "9"))]
+                        ["more than 16 MiB" (str "\"" (str/join (repeat (* 16 1024 1024) "x")) "\"")]]]
+      (is (= :kajero/bad-edn (refusal #(data/read-edn text))) why))))
