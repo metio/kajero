@@ -2,14 +2,14 @@
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 {:paths ["src"]
  :deps {org.clojure/clojure {:mvn/version "1.12.6"}
-        ;; tik.sign signs and verifies revisions with the actors' tik keys
-        io.github.metio/tik {:git/sha "8447157bce1a8d3a6f3222dbff796b887427633b"}
-        ;; briko.ssh-sign and briko.sshsig sign and verify records,
-        ;; checkpoints and skill manifests
+        ;; briko signs and verifies records, checkpoints and skill
+        ;; manifests, answers the MCP protocol and reads untrusted EDN
         io.github.metio/briko {:git/sha "3e8fc5431a6d5f2e7b70ac62994065784bbc5b16"}
-        ;; kajero.mcp and kajero.web read and write JSON with it; declared
-        ;; at the version tik brings, so the resolution stays the same
-        cheshire/cheshire {:mvn/version "6.2.0"}
+        ;; kajero.mcp, kajero.web and briko.mcp read and write JSON with
+        ;; it; cheshire and jackson-core at the versions briko's tests
+        ;; declare, so kajero runs briko.mcp on what briko tested
+        cheshire/cheshire {:mvn/version "6.2.1"}
+        com.fasterxml.jackson.core/jackson-core {:mvn/version "2.23.0"}
         org.xerial/sqlite-jdbc {:mvn/version "3.54.1.0"}
         metosin/malli {:mvn/version "0.20.3"}
         hiccup/hiccup {:mvn/version "2.0.0-RC1"}
