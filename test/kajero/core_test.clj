@@ -9,7 +9,7 @@
             [kajero.store :as store]
             [kajero.test-keys :as keys]
             [kajero.test-temp :as temp]
-            [tik.sign])
+            [briko.ssh-sign])
   (:import (java.time Instant)))
 
 (def ^:private ^:dynamic *backend* :sqlite)
@@ -297,7 +297,7 @@
     (let [nb (notebook {:actors actors})
           rec {:entry (str (random-uuid)) :seq 1 :base nil :title "legacy" :body "" :labels {"kind" "fact"}
                :evidence [] :actor "claude" :at "2026-11-26T00:00:00Z" :data {:a/x 1 :a/y 2}}
-          sig (tik.sign/sign-bytes key (record/legacy-bytes rec) record/signature-namespace)]
+          sig (briko.ssh-sign/sign-bytes key (record/legacy-bytes rec) record/signature-namespace)]
       (store/append! (:store nb) :revision rec sig)
       (is (= :verified (:signature (k/entry nb (:entry rec)))))
       (is (empty? (k/search nb "unverified"))))))

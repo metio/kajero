@@ -19,7 +19,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [kajero.skill-files :as files]
-            [tik.sign :as sign])
+            [briko.ssh-sign :as sign])
   (:import (java.nio ByteBuffer)
            (java.nio.charset CharacterCodingException CodingErrorAction StandardCharsets)
            (java.security MessageDigest)

@@ -26,10 +26,10 @@
    A record signed over the bytes clojure.main's thread printed (see
    kajero.record/legacy-bytes) verifies too, and its verdict says
    :form :legacy; every other verified record says :form :canonical."
-  (:require [clojure.java.io :as io]
-            [kajero.record :as record]
-            [tik.sign :as sign]
-            [tik.sshsig :as sshsig])
+  (:require [briko.ssh-sign :as sign]
+            [briko.sshsig :as sshsig]
+            [clojure.java.io :as io]
+            [kajero.record :as record])
   (:import (java.nio.file Files LinkOption NoSuchFileException Path)
            (java.nio.file.attribute BasicFileAttributes)
            (java.util ArrayList)
@@ -39,13 +39,16 @@
 (defn check-signature
   "Whether `sig` is `actor`'s signature over `message` under the actors
    file whose text is `text` and whose path is `path`. Ed25519 is judged in
-   process from the text; a key type tik.sshsig does not implement falls
-   back to ssh-keygen over the file at `path`."
+   process from the text; a key type briko.sshsig does not implement falls
+   back to ssh-keygen over the file at `path`. An actor that is not a
+   non-blank string is nobody's signature, whatever the file grants."
   [{:keys [text path]} ^bytes message ^bytes sig actor]
-  (let [verdict (sshsig/verify text message sig actor record/signature-namespace)]
-    (if (= ::sshsig/unsupported verdict)
-      (boolean (sign/verify-bytes path message sig actor record/signature-namespace))
-      (boolean verdict))))
+  (if-not (record/principal? actor)
+    false
+    (let [verdict (sshsig/verify text message sig actor record/signature-namespace)]
+      (if (sshsig/unsupported? verdict)
+        (boolean (and path (true? (sign/verify-bytes path message sig actor record/signature-namespace))))
+        (true? verdict)))))
 
 (defn verifier
   "A verifier of signatures against the actors file at `actors`, which may

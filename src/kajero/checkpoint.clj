@@ -33,14 +33,14 @@
    A checkpoint is taken whole or not at all: a wrong signature, an unknown
    format, a malformed line or any digest that does not match the lines
    makes the whole file ignored with a warning, and nothing of it is used."
-  (:require [clojure.edn :as edn]
+  (:require [briko.ssh-sign :as sign]
+            [briko.sshsig :as sshsig]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [kajero.merkle :as merkle]
             [kajero.record :as record]
-            [kajero.verify :as verify]
-            [tik.sign :as sign]
-            [tik.sshsig :as sshsig])
+            [kajero.verify :as verify])
   (:import (java.io File)
            (java.net URLDecoder URLEncoder)
            (java.nio.charset StandardCharsets)

@@ -1,12 +1,12 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.verify-test
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [briko.ssh-sign :as sign]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.record :as record]
             [kajero.test-keys :as keys]
             [kajero.test-temp :as temp]
-            [kajero.verify :as verify]
-            [tik.sign :as sign]))
+            [kajero.verify :as verify]))
 
 (use-fixtures :each temp/each)
 
@@ -65,8 +65,19 @@
 
 (deftest a-signature-for-another-namespace-is-a-bad-signature
   (when-let [{:keys [key actors]} (keys/keypair "claude")]
-    (let [sig (sign/sign-bytes key (record/->bytes rec) sign/namespace-event)]
+    (let [sig (sign/sign-bytes key (record/->bytes rec) "tik-event")]
       (is (= :bad-signature (state (verify/verifier actors) (assoc rec :sig sig)))))))
+
+(deftest a-record-without-an-actor-verifies-as-nobody
+  (when-let [{:keys [key actors]} (keys/keypair "claude")]
+    (let [v (verify/verifier actors)]
+      (doseq [actor [nil "" "  " :claude]]
+        (testing (pr-str actor)
+          (let [r (signed key (assoc rec :actor actor))]
+            (is (= :bad-signature (state v r)) "the key is granted to claude, and to nobody else")
+            (is (false? (record/verified? actors r (:sig r))))
+            (is (false? (verify/check-signature {:text (slurp actors) :path actors}
+                                                (record/->bytes r) (:sig r) actor)))))))))
 
 (deftest a-garbled-signature-is-a-bad-signature
   (when-let [{:keys [actors]} (keys/keypair "claude")]

@@ -8,8 +8,9 @@
    hash and a signature that verifies wherever the bytes are read. The
    text is printed by kajero.print under fixed print settings, so the
    bytes do not depend on the thread or process that prints them."
-  (:require [kajero.print :as kp]
-            [tik.sign :as sign])
+  (:require [briko.ssh-sign :as sign]
+            [clojure.string :as str]
+            [kajero.print :as kp])
   (:import (java.nio.charset StandardCharsets)
            (java.security MessageDigest)
            (java.util HexFormat)))
@@ -70,10 +71,17 @@
   ^bytes [key-file record]
   (sign/sign-bytes key-file (->bytes record) signature-namespace))
 
+(defn principal?
+  "Whether `actor` can name the signer of a record: a non-blank string. A
+   record without one verifies as nobody, never as whoever the actors file
+   happens to grant the key to."
+  [actor]
+  (and (string? actor) (not (str/blank? actor))))
+
 (defn verified?
   "Whether `sig` is the record's actor's signature over the record, per the
    allowed-signers file `actors`."
   [actors record ^bytes sig]
-  (boolean (and actors sig
-                (sign/verify-bytes actors (->bytes record) sig (:actor record)
-                                   signature-namespace))))
+  (boolean (and actors sig (principal? (:actor record))
+                (true? (sign/verify-bytes (str actors) (->bytes record) sig (:actor record)
+                                          signature-namespace)))))

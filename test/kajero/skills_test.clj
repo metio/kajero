@@ -9,7 +9,7 @@
             [kajero.skills :as skills]
             [kajero.test-keys :as tk]
             [kajero.test-temp :as temp]
-            [tik.sign :as sign])
+            [briko.ssh-sign :as sign])
   (:import (java.net URLClassLoader)
            (java.nio.file Files)
            (java.nio.file.attribute FileAttribute)))
