@@ -15,11 +15,15 @@
    every client, so one without the extension still finds SKILL.md as an
    ordinary resource, named in the server instructions.
 
-   Two eras of the protocol are answered side by side: the initialize
-   handshake of 2024-11-05 to 2025-06-18, and revision 2026-07-28, in which
+   briko.mcp answers the protocol: two eras side by side, the initialize
+   handshake of 2024-11-05 to 2025-06-18 and revision 2026-07-28, in which
    each request carries its revision and the client's capabilities in its
-   own _meta (see handle-message)."
-  (:require [cheshire.core :as json]
+   own _meta. A request with a modern MCP-Protocol-Version header but no
+   _meta is refused with 400 and -32602, a notification runs nothing, an
+   unknown tool answers -32602 and an unknown method -32601. This
+   namespace supplies the methods (see server)."
+  (:require [briko.mcp :as rpc]
+            [cheshire.core :as json]
             [clojure.edn :as edn]
             [clojure.string :as str]
             [kajero.checkpoint :as checkpoint]
@@ -217,18 +221,6 @@
     (json/generate-string (cond-> {:refused (some-> reason name) :message (ex-message e)}
                             current (assoc :current current)))))
 
-(def ^:private protocol-versions
-  "The MCP revisions of the initialize handshake this server speaks; it
-   answers an initialize in the client's revision when it is one of them,
-   else in the newest."
-  ["2025-06-18" "2025-03-26" "2024-11-05"])
-
-(def ^:private modern-versions
-  "The MCP revisions without a handshake this server speaks: every request
-   names its revision and the client's capabilities in its own _meta.
-   Claude Code lists a server's skills only over one of these."
-  ["2026-07-28"])
-
 (def ^:private server-info {:name "kajero" :version "1"})
 
 (def ^:private signers
@@ -240,9 +232,6 @@
     (or (get @signers w)
         (get (swap! signers #(cond-> % (not (contains? % w)) (assoc w (skills/signer w)))) w))))
 
-(def ^:private meta-version "io.modelcontextprotocol/protocolVersion")
-(def ^:private meta-capabilities "io.modelcontextprotocol/clientCapabilities")
-
 (defn- capabilities [catalog]
   (cond-> {:tools {}}
     (seq (:skills catalog)) (assoc :resources {}
@@ -250,133 +239,54 @@
                                    ;; directory queries from the manifest
                                    :extensions {skills/extension-id {}})))
 
-(defn- protocol-error
-  ([id code message] {:jsonrpc "2.0" :id id :error {:code code :message message}})
-  ([id code message data] (cond-> (protocol-error id code message) data (assoc-in [:error :data] data))))
+(defn- counted-session
+  "The session a request's searches and reads count for: over HTTP a
+   request of a modern revision belongs to none, because those revisions
+   have no sessions."
+  [session {:keys [era headers]}]
+  (when-not (and (= :modern era) headers) session))
 
-(defn- rpc-error!
-  "Answers the request with the JSON-RPC error `code`; `status` is the HTTP
-   status the error calls for on /mcp."
-  ([code message] (rpc-error! code message {}))
-  ([code message {:keys [data status]}]
-   (throw (ex-info message {::code code ::data data ::status (or status 200)}))))
+(defn- tool-registry
+  "The tools as briko.mcp/tool-handlers takes them. A refusal answers as
+   a tool error carrying its reason, so the client can correct the call."
+  [nb writer session]
+  (mapv (fn [{tool :name :as t}]
+          (assoc t :call (fn [args request]
+                           (try
+                             {:text (json/generate-string
+                                     (call-tool nb writer (counted-session session request) tool args))}
+                             (catch clojure.lang.ExceptionInfo e
+                               {:text (refusal-text e) :error? true})))))
+        tools))
 
-(defn- answer
-  "The result of a method both eras answer, or ::unknown."
-  [nb writer session catalog sign method params]
+(defn server
+  "The briko.mcp server of one request: the notebook's tools as writer,
+   counting for `session`, and the skills of `catalog` signed by `sign`.
+   The skills methods exist only when the catalog holds a skill, so
+   without one they answer -32601 like any unknown method."
+  [nb writer session catalog sign]
   (let [skills? (boolean (seq (:skills catalog)))]
-    (case method
-      "tools/list" {:tools tools}
-      "tools/call" (let [args (get params "arguments")]
-                     (try
-                       {:content [{:type "text"
-                                   :text (json/generate-string
-                                          (call-tool nb writer session (get params "name")
-                                                     (if (map? args) args {})))}]
-                        :isError false}
-                       (catch clojure.lang.ExceptionInfo e
-                         {:content [{:type "text" :text (refusal-text e)}] :isError true})))
-      "resources/list" {:resources (if skills? (skills/resource-list catalog) [])}
-      "resources/templates/list" {:resourceTemplates []}
-      "resources/read" (skills/read-result catalog (get params "uri"))
-      "skills/list" (if skills? (skills/list-result catalog sign) ::unknown)
-      "skills/get" (if skills? (skills/get-result catalog sign (get params "uri")) ::unknown)
-      "ping" {}
-      ::unknown)))
-
-(defn- header-value
-  "A mirrored header as the client meant it: the Base64 sentinel form
-   =?base64?...?= decoded, anything else as sent."
-  [v]
-  (if-let [[_ b64] (and (string? v) (re-matches #"=\?base64\?([A-Za-z0-9+/]*={0,2})\?=" v))]
-    (try (String. (.decode (java.util.Base64/getDecoder) ^String b64) java.nio.charset.StandardCharsets/UTF_8)
-         (catch IllegalArgumentException _ ::undecodable))
-    v))
-
-(defn- check-headers!
-  "The Streamable HTTP rule of the modern revisions: the version, method
-   and name the body carries must stand in the headers, unchanged, so
-   nothing that routes on the headers sees another request than the one
-   we run. A header sent twice is refused as missing."
-  [headers method params version]
-  (let [mismatch #(rpc-error! -32020 (str "header mismatch: " %) {:status 400})
-        one (fn [h] (let [vs (get headers h)] (when (= 1 (count vs)) (first vs))))]
-    (when-not (= version (one "mcp-protocol-version"))
-      (mismatch "MCP-Protocol-Version must equal the request's protocol version"))
-    (when-not (= method (one "mcp-method"))
-      (mismatch "Mcp-Method must equal the request's method"))
-    (when-let [field ({"tools/call" "name" "resources/read" "uri" "prompts/get" "name"} method)]
-      (when-not (= (get params field) (header-value (one "mcp-name")))
-        (mismatch (str "Mcp-Name must equal params." field))))))
-
-(defn- modern-result
-  "A modern result: complete unless it says otherwise, naming the server."
-  [r]
-  (-> r
-      (update :resultType #(or % "complete"))
-      (assoc-in [:_meta "io.modelcontextprotocol/serverInfo"] server-info)))
-
-(defn- modern
-  "One request of a modern revision, answered from what it carries alone:
-   its own _meta says which revision and capabilities it speaks. `headers`
-   is nil on stdio."
-  [answer! catalog id method params headers]
-  (let [version (get-in params ["_meta" meta-version])]
-    (when-not (string? version)
-      (rpc-error! -32602 (str "the request's _meta needs " meta-version) {:status 400}))
-    (when-not (some #{version} modern-versions)
-      (rpc-error! -32022 "unsupported protocol version"
-                  {:data {:supported modern-versions :requested version} :status 400}))
-    (when-not (map? (get-in params ["_meta" meta-capabilities]))
-      (rpc-error! -32602 (str "the request's _meta needs " meta-capabilities) {:status 400}))
-    (when headers (check-headers! headers method params version))
-    (when id
-      (if (= "server/discover" method)
-        {:jsonrpc "2.0" :id id
-         :result (modern-result (cond-> {:supportedVersions modern-versions
-                                         :capabilities (capabilities catalog)
-                                         :ttlMs skills/ttl-ms :cacheScope "public"}
-                                  (seq (:skills catalog)) (assoc :instructions (skills/instructions catalog))))}
-        (let [r (answer! method params)]
-          (when (= ::unknown r)
-            (rpc-error! -32601 (str "method not found: " method) {:status 404}))
-          {:jsonrpc "2.0" :id id :result (modern-result r)})))))
-
-(defn- legacy
-  "One request of the initialize handshake era."
-  [answer! catalog id method params]
-  (if (= "initialize" method)
-    {:jsonrpc "2.0" :id id
-     :result (cond-> {:protocolVersion (let [asked (get params "protocolVersion")]
-                                         (if (some #{asked} protocol-versions) asked (first protocol-versions)))
-                      :capabilities (capabilities catalog)
-                      :serverInfo server-info}
-               (seq (:skills catalog)) (assoc :instructions (skills/instructions catalog)))}
-    (let [r (answer! method params)]
-      (cond
-        (and (= ::unknown r) (#{"skills/list" "skills/get"} method))
-        (rpc-error! -32601 (str "method not found: " method))
-        (= ::unknown r) (when id {:jsonrpc "2.0" :id id :result {}})
-        :else {:jsonrpc "2.0" :id id :result r}))))
-
-(defn modern?
-  "Whether the parsed message is a request of a modern revision: one whose
-   _meta names a protocol version, or a server/discover, which only the
-   modern revisions know. An initialize is always the handshake."
-  [{:strs [method params]}]
-  (and (not= "initialize" method)
-       (or (= "server/discover" method)
-           (some? (get-in params ["_meta" meta-version])))))
+    (rpc/server
+     {:server-info server-info
+      :capabilities (capabilities catalog)
+      :instructions (when skills? (skills/instructions catalog))
+      :discover {:ttlMs skills/ttl-ms :cacheScope "public"}
+      :handlers (merge (rpc/tool-handlers (tool-registry nb writer session))
+                       {"resources/list" (fn [_ _] {:resources (if skills? (skills/resource-list catalog) [])})
+                        "resources/templates/list" (fn [_ _] {:resourceTemplates []})
+                        "resources/read" (fn [params _] (skills/read-result catalog (get params "uri")))}
+                       (when skills?
+                         {"skills/list" (fn [_ _] (skills/list-result catalog sign))
+                          "skills/get" (fn [params _] (skills/get-result catalog sign (get params "uri")))}))})))
 
 (defn handle-message
   "{:response r :status s} for one request line: r is nil for a
-   notification, s the HTTP status it calls for on /mcp.
+   notification, s the HTTP status it calls for on /mcp. briko.mcp
+   answers the protocol, both eras of it, and this namespace the methods.
 
-   A message of a modern revision is answered from its own _meta; any
-   other is the initialize handshake era. Searches and reads count for
-   `session`, the id of the MCP session the line belongs to, or for none;
-   over HTTP a modern request belongs to no session, because those
-   revisions have none. `opts`:
+   Searches and reads count for `session`, the id of the MCP session the
+   line belongs to, or for none; over HTTP a modern request belongs to no
+   session. `opts`:
      :skills   the skill catalog to serve, the one the build put on the
                classpath by default
      :sign     a skill entry to the entry with the writer's manifest
@@ -384,36 +294,9 @@
      :headers  the HTTP request's headers, lower-cased names to lists of
                values; nil on stdio"
   [nb writer session line opts]
-  (let [msg (try (json/parse-string line) (catch Exception _ ::unreadable))]
-    (if-not (map? msg)
-      {:response {:jsonrpc "2.0" :id nil :error {:code -32700 :message "parse error: not a JSON object"}} :status 200}
-      (let [{:strs [id method params]} msg
-            params (if (map? params) params {})
-            headers (:headers opts)
-            era (if (modern? msg) :modern :legacy)
-            session (when-not (and (= :modern era) headers) session)
-            sign (or (:sign opts) (signer-for writer))]
-        (try
-          (let [catalog (if (contains? opts :skills) (:skills opts) @skills/served)
-                answer! (fn [m p] (answer nb writer session catalog sign m p))]
-            {:response (if (= :modern era)
-                         (modern answer! catalog id method params headers)
-                         (legacy answer! catalog id method params))
-             :status 200})
-          (catch clojure.lang.ExceptionInfo e
-            (let [{::keys [code data status]} (ex-data e)
-                  code (or code (:code (ex-data e)))]
-              {:response (if code
-                           (protocol-error id code (ex-message e) data)
-                           (protocol-error id -32603 (str "internal error: " (ex-message e))))
-               :status (or status 200)}))
-          ;; The protocol boundary: any failure, an Error included, becomes a
-          ;; JSON-RPC error answer instead of ending the session.
-          #_{:splint/disable [lint/catch-throwable]}
-          (catch Throwable e
-            {:response {:jsonrpc "2.0" :id id
-                        :error {:code -32603 :message (str "internal error: " (or (ex-message e) (.getName (class e))))}}
-             :status 200}))))))
+  (let [catalog (if (contains? opts :skills) (:skills opts) @skills/served)
+        sign (or (:sign opts) (signer-for writer))]
+    (rpc/handle-line (server nb writer session catalog sign) line {:headers (:headers opts)})))
 
 (defn handle
   "The response to one request line, or nil for a notification - see
@@ -446,10 +329,5 @@
     (k/verify-in-background! nb)
     (k/keep-flushing! nb)
     (k/keep-checkpointing! nb)
-    (loop []
-      (when-let [line (read-line)]
-        (when-let [response (handle nb writer session line)]
-          (println (json/generate-string response))
-          (flush))
-        (recur)))
+    (rpc/serve-stdio (server nb writer session @skills/served (signer-for writer)))
     (k/close! nb)))

@@ -654,7 +654,9 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
           {:status status
            :headers (cond-> {"Content-Type" "application/json"} started (assoc "Mcp-Session-Id" started))
            :body (json/generate-string response)}
-          {:status 202 :headers {"Content-Type" "application/json"} :body ""})))))
+          ;; a notification: 202 when accepted, else the status of the
+          ;; modern check that refused it
+          {:status status :headers {"Content-Type" "application/json"} :body ""})))))
 
 (defn request-guard
   "A refusal for a request this server must not answer, else nil.

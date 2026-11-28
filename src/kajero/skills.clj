@@ -16,7 +16,8 @@
    under the namespace kajero-skill-manifest, made with the key of the
    actor the server writes as, and carried in the entry's _meta under
    wtf.metio/skill-manifest. A server without a key says so there."
-  (:require [clojure.java.io :as io]
+  (:require [briko.mcp :as rpc]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [kajero.skill-files :as files]
             [briko.ssh-sign :as sign])
@@ -273,7 +274,7 @@
 ;; ------------------------------------------------------------ the protocol
 
 (defn- invalid! [message]
-  (throw (ex-info message {:reason :kajero/invalid-params :code -32602})))
+  (rpc/rpc-error! rpc/invalid-params message))
 
 (defn list-result
   "The result of skills/list."
