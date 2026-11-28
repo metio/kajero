@@ -1,0 +1,1 @@
+{:labels {"kind" "schema"}, :evidence [], :title "A schema", :at "2026-11-28T00:23:47.127342796Z", :entry "0a47c350-cf7c-40e0-9d8c-fcdfab87cfd5", :seq 1, :base nil, :body "", :actor "claude", :data [:vector [:map [:host :string]]]}

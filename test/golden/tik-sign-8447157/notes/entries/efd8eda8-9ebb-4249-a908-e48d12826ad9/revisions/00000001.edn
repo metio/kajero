@@ -1,0 +1,1 @@
+{:labels {"kind" "fact", "system" "calico"}, :evidence ["kubectl get apiservices"], :title "Calico serves projectcalico.org/v3 from CRDs", :at "2026-11-28T00:23:47.033507732Z", :entry "efd8eda8-9ebb-4249-a908-e48d12826ad9", :seq 1, :base nil, :body "Seen with **kubectl get apiservices**.", :actor "claude", :data [{:host "w-1", :cpus 8} {:host "w-2", :cpus 16, :tags #{:b :a}}]}
