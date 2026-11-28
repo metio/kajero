@@ -216,10 +216,10 @@
     :missing :no-signature
     :unsigned :unsigned
     :wrong-namespace :wrong-namespace
-    :malformed (cond
-                 (str/starts-with? (:reason v) "unknown manifest format") :wrong-format
-                 (= "a signed value needs an actor and a signature" (:reason v)) :bad-signature
-                 :else :bad-manifest)
+    :malformed (case (:code v)
+                 :unknown-format :wrong-format
+                 :no-actor-or-signature :bad-signature
+                 :bad-manifest)
     (:bad-signature :unchecked) (if actors? verdict :no-actors)))
 
 (defn verify-entry

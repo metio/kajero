@@ -141,7 +141,7 @@
             :checkpoints ck
             :citations (atom nil)
             :usage (usage/recorder (if dir (usage/file-log (usage/beside dir)) (usage/sqlite-log (:conn s))))
-            :tik-status (or tik-status (when tik-root (tik/cached (tik/status-in tik-root))))}]
+            :tik-status (or tik-status (when tik-root (tik/cached (tik/store-lookup tik-root))))}]
     (when-not (= :background warm-up) (warm-up! nb))
     nb))
 

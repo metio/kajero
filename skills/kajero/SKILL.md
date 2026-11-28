@@ -185,7 +185,16 @@ few seconds instead of reading the refusal as "none".
 - Give evidence a reader can repeat: the command and what it showed, a
   commit, a URL. Cite the tik ticket you worked under as `tik:<ticket id>`;
   the notebook checks it exists, and `ticket=<id>` later finds everything
-  learned under that ticket.
+  learned under that ticket. Only the full id is a citation; an
+  eight-character prefix is kept as plain text and checked by nobody.
+  `kajero_get` lists the cited tickets with their title and `current`
+  stages. A ticket listed with `problems` and no `current` is one whose
+  stage the notebook would not vouch for: `unverified` (an event is
+  unsigned, signed by a key the store does not grant, or fails tik's
+  verification), `definition-mismatch` (it no longer derives under the
+  process definition it pinned), `tik-unavailable`, or the reason tik
+  could not read it. Check such a ticket with tik itself before you rely
+  on it.
 - `kajero_write` returns `similar` entries with the same title or labels.
   When one of them covers your finding, revise it and leave the new entry
   unused, or link the two.

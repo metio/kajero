@@ -1,0 +1,1 @@
+{:event/actor "smoke" :event/at #inst "2026-11-28T01:52:07.544Z" :event/body {:ticket/process :citation :ticket/process-hash "sha256-268aca31a044f4b92c83c26d8d243098a7815b4389942bdf4b9a206c2731cbcc" :ticket/process-version 1 :ticket/title "Smoke ticket"} :event/parents #{} :event/ticket #uuid "42dc530c-ef7d-41e4-a14c-45c55e3b29e6" :event/type :ticket/create}

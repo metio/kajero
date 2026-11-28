@@ -1,0 +1,3 @@
+;; SPDX-FileCopyrightText: The kajero Authors
+;; SPDX-License-Identifier: AGPL-3.0-or-later
+#:process{:id :citation, :version 1, :guard-vocab 1, :facts {[:commit] [:string {:min 7}]}, :stages [{:stage/id :opened, :guards []} {:stage/id :done, :after [:opened], :guards [[:fact [:commit]]]}]}

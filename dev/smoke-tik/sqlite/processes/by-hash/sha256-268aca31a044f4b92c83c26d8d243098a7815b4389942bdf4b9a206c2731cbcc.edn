@@ -1,0 +1,1 @@
+{:process/facts {[:commit] [:string {:min 7}]} :process/guard-vocab 1 :process/id :citation :process/stages [{:guards [] :stage/id :opened} {:after [:opened] :guards [[:fact [:commit]]] :stage/id :done}] :process/version 1}

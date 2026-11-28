@@ -54,9 +54,9 @@
     "serve" (do (exit-on-signals!) (web/-main))
     "mcp" (do (exit-on-signals!)
               (mcp/-main)
-              ;; clojure.java.shell, which runs ssh-keygen and tik status,
-              ;; reads their output on agent threads that would keep the
-              ;; process alive for a minute after the client's stdin closes.
+              ;; babashka.process, which runs ssh-keygen for briko, reads
+              ;; its output on agent threads that would keep the process
+              ;; alive for a minute after the client's stdin closes.
               (shutdown-agents))
     ("help" "--help" "-h") (println usage)
     (apply cli/-main args)))

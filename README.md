@@ -177,12 +177,24 @@ A selector the notebook refuses answers 400 with `{:refused … :message …}`.
 
 Evidence of the form `tik:<ticket id>` cites a ticket of the tik store named
 by `KAJERO_TIK_ROOT`. A write citing a ticket that store does not hold is
-refused; a notebook bound to no store takes citations unchecked. Entries
-show each cited ticket with its title and the stages it derives, read from
-`tik status` at most a minute before, and `ticket=<id>` selects every entry
-whose records cite it. A write checks a citation against a remembered
-answer only when that answer found the ticket, so a ticket minted a moment
-ago is never refused from memory.
+refused; a notebook bound to no store takes citations unchecked, and a
+store that cannot be read refuses the write as `tik-unavailable`. Entries
+show each cited ticket with its title and the stages it derives, read in
+process through tik's library (`tik.api`) at most a minute before, and
+`ticket=<id>` selects every entry whose records cite it. A write checks a
+citation against a remembered answer only when that answer found the
+ticket, so a ticket minted a moment ago is never refused from memory.
+
+A stage is shown only when the ticket verifies: every check of tik's
+verification ladder passes, every event carries a signature a key of the
+store grants, and the ticket derives under the process definition it
+pinned. Otherwise the ticket shows its title and, under `problems`, why no
+stage is shown: `unverified`, `definition-mismatch`, `tik-unavailable`,
+the reason tik could not read it (`too-large`, `unreadable`,
+`definition-missing`, `malformed-roles`, `underivable`), or `tik-error` for
+a failure of tik itself. A verdict is reused for at most ten minutes, and
+only while the ticket's events and the store's trust files (`actors`, `pq-signers`, `signatures.edn`, `oidc.edn`,
+`roles.edn`, `delegation.edn`) are unchanged.
 
 ## Storage
 

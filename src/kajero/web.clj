@@ -140,7 +140,7 @@ dl.data{display:grid;grid-template-columns:max-content 1fr;gap:.3rem 1rem;font-s
 dl.data dt{font-family:ui-monospace,Menlo,monospace;color:var(--muted)}dl.data dd{margin:0}
 .ticket{display:inline-flex;gap:.4rem;align-items:center;font:12px/1.2 ui-monospace,Menlo,monospace;
 border:1px solid var(--rule);border-radius:6px;padding:.3rem .55rem;margin:.15rem .3rem .15rem 0}
-.ticket .stage{color:var(--accent)}
+.ticket .stage{color:var(--accent)}.ticket .problem{color:var(--failed)}
 .schema-note{font-size:.8rem;color:var(--muted)}
 @media (max-width:640px){h1{font-size:1.7rem}.sheet{padding:1.1rem 1rem 1.1rem 2.2rem}}
 ")
@@ -272,11 +272,12 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
 (defn- ticket-chips [tickets]
   (when (seq tickets)
     [:div {:style "margin:.4rem 0"}
-     (for [{:keys [ticket title current]} tickets]
+     (for [{:keys [ticket title current problems]} tickets]
        [:a.ticket {:href (view-href (str "ticket=" ticket)) :title (str "entries citing tik ticket " ticket)}
         [:span "tik " (subs ticket 0 8)]
         (when title [:span title])
-        (when (seq current) [:span.stage (str/join " " current)])])]))
+        (when (seq current) [:span.stage (str/join " " current)])
+        (when (seq problems) [:span.problem (str "no stage shown: " (str/join ", " problems))])])]))
 
 (defn- sheet [nb {:keys [entry title body labels at actor standing signature] :as e} full?]
   [:article.sheet
