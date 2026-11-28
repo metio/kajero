@@ -10,8 +10,7 @@
    human like any other. Every form carries a token minted when the server
    starts, and a request a browser marks as cross-site is refused, so another
    web page can not write into the notebook through the visitor's browser."
-  (:require [cheshire.core :as json]
-            [clojure.pprint :as pp]
+  (:require [clojure.pprint :as pp]
             [clojure.string :as str]
             [hiccup2.core :as h]
             [kajero.checkpoint :as checkpoint]
@@ -654,7 +653,7 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
         (if response
           {:status status
            :headers (cond-> {"Content-Type" "application/json"} started (assoc "Mcp-Session-Id" started))
-           :body (json/generate-string response)}
+           :body (mcp/write-message response)}
           ;; a notification: 202 when accepted, else the status of the
           ;; modern check that refused it
           {:status status :headers {"Content-Type" "application/json"} :body ""})))))
@@ -685,8 +684,9 @@ var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r});rows.f
 
 (def ^:private max-body
   "The largest request body read, in bytes; a larger one is refused before
-   it is parsed."
-  (* 16 1024 1024))
+   it is parsed. A body on /mcp is one JSON-RPC message, so the bound is
+   the longest message kajero.mcp reads."
+  mcp/max-message-bytes)
 
 (defn- exchange->request [^HttpExchange ex]
   (let [method (.getRequestMethod ex)

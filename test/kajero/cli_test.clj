@@ -73,3 +73,12 @@
     (let [[entry] (#'cli/skill-command {} ["manifest"])]
       (is (= "skill://kajero/SKILL.md" (:uri entry)))
       (is (false? (get-in entry [:_meta skills/meta-key :signed]))))))
+
+(deftest skill-verify-reads-a-listing-as-strict-json
+  (let [verify (fn [text] (with-in-str text (#'cli/skill-command {} ["verify" "-"])))]
+    (testing "control: an empty listing reads"
+      (is (= [] (verify "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"skills\":[]}}"))))
+    (testing "a listing naming a key twice is neither JSON nor EDN"
+      (is (= :kajero/bad-edn
+             (try (verify "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"skills\":[]},\"result\":{\"skills\":[]}}")
+                  (catch clojure.lang.ExceptionInfo e (:reason (ex-data e)))))))))

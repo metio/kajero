@@ -16,7 +16,7 @@
                      the pinned checkpoint key and where checkpoints live -
                      see kajero.checkpoint/settings; the command line reads
                      checkpoints and never signs one"
-  (:require [cheshire.core :as json]
+  (:require [briko.json :as bj]
             [clojure.java.io :as io]
             [clojure.pprint :as pp]
             [clojure.string :as str]
@@ -105,8 +105,14 @@
       (contains? x :skill) [(:skill x)]
       :else [x])))
 
+(def ^:private listing-options
+  "How a skills listing is read as JSON: within the bound kajero.data
+   reads the same listing as EDN, so the format a listing comes in does
+   not change what can be verified."
+  {:max-bytes data/max-edn-bytes :keys :keyword})
+
 (defn- read-entries [text]
-  (skill-entries (try (json/parse-string text true)
+  (skill-entries (try (bj/parse-string text listing-options)
                       (catch Exception _ (data/read-edn text)))))
 
 (defn- skill-command
@@ -122,7 +128,7 @@
                      root (one flags :root)
                      results (vec (for [entry entries
                                         :let [v (skills/verify-entry (getenv "KAJERO_ACTORS") entry)
-                                              e (try (json/parse-string (json/generate-string entry) true)
+                                              e (try (bj/parse-string (bj/write-string entry) listing-options)
                                                      (catch Exception _ nil))
                                               skill (some->> (:uri e) (re-find #"^skill://([^/]+)/") second)
                                               differ (when (and root skill)

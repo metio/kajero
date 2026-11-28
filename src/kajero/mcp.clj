@@ -21,9 +21,17 @@
    own _meta. A request with a modern MCP-Protocol-Version header but no
    _meta is refused with 400 and -32602, a notification runs nothing, an
    unknown tool answers -32602 and an unknown method -32601. This
-   namespace supplies the methods (see server)."
-  (:require [briko.mcp :as rpc]
-            [cheshire.core :as json]
+   namespace supplies the methods (see server).
+
+   Every message is read and written by briko.json: a line must hold
+   exactly one JSON value of RFC 8259 within max-message-bytes, and every
+   hidden code point in an answer is written as \\uXXXX."
+  (:require [briko.json :as bj]
+            [briko.mcp :as rpc]
+            ;; briko.json resolves cheshire when first used; requiring it
+            ;; here loads it when the native image is built
+            [cheshire.core]
+            [cheshire.factory]
             [clojure.string :as str]
             [kajero.checkpoint :as checkpoint]
             [kajero.core :as k]
@@ -212,8 +220,21 @@
 (defn- refusal-text
   [e]
   (let [{:keys [reason current]} (ex-data e)]
-    (json/generate-string (cond-> {:refused (some-> reason name) :message (ex-message e)}
-                            current (assoc :current current)))))
+    (bj/write-string (cond-> {:refused (some-> reason name) :message (ex-message e)}
+                       current (assoc :current current)))))
+
+(defn- result-text
+  "A tool's result as JSON text. A result briko.json refuses to write, such
+   as data whose map keys print to the same JSON name, is a refusal of
+   the call."
+  [result]
+  (try
+    (bj/write-string result)
+    (catch clojure.lang.ExceptionInfo e
+      (if (bj/refusal? e)
+        (throw (ex-info (str "the result cannot be written as JSON: " (ex-message e))
+                        {:reason :kajero/unwritable-result}))
+        (throw e)))))
 
 (def ^:private server-info {:name "kajero" :version "1"})
 
@@ -247,8 +268,7 @@
   (mapv (fn [{tool :name :as t}]
           (assoc t :call (fn [args request]
                            (try
-                             {:text (json/generate-string
-                                     (call-tool nb writer (counted-session session request) tool args))}
+                             {:text (result-text (call-tool nb writer (counted-session session request) tool args))}
                              (catch clojure.lang.ExceptionInfo e
                                {:text (refusal-text e) :error? true})))))
         tools))
@@ -273,6 +293,63 @@
                          {"skills/list" (fn [_ _] (skills/list-result catalog sign))
                           "skills/get" (fn [params _] (skills/get-result catalog sign (get params "uri")))}))})))
 
+(def max-message-bytes
+  "The longest JSON-RPC message read, in UTF-8 bytes: the largest request
+   body kajero.web reads, so a kajero_write can carry data_edn as long as
+   kajero.data reads."
+  data/max-edn-bytes)
+
+(def ^:private read-options {:max-bytes max-message-bytes})
+
+(def ^:private not-a-value
+  "The refusals of text that holds no single JSON value at all. They
+   answer as briko.mcp answers text it cannot read; every other refusal
+   names the bound or rule the text broke."
+  #{:briko.json/invalid-input :briko.json/malformed :briko.json/no-value :briko.json/trailing-value})
+
+(defn- parse-error [e]
+  {:response {:jsonrpc "2.0"
+              :id nil
+              :error {:code rpc/parse-error
+                      :message (if (contains? not-a-value (:type (ex-data e)))
+                                 "parse error: not a JSON value"
+                                 (str "parse error: " (ex-message e)))}}
+   :status 200})
+
+(defn- read-message
+  "The JSON value `line` holds, or the briko.json refusal of it."
+  [line]
+  (try
+    (bj/parse-string line read-options)
+    (catch clojure.lang.ExceptionInfo e
+      (if (bj/refusal? e) e (throw e)))))
+
+(defn- handle-line
+  "{:response r :status s} for one request line to `server`, as
+   briko.mcp/handle-message answers the message it holds."
+  [server line opts]
+  (let [msg (read-message line)]
+    (if (instance? Throwable msg)
+      (parse-error msg)
+      (rpc/handle-message server msg opts))))
+
+(defn write-message
+  "A JSON-RPC message as one line of JSON text."
+  [msg]
+  (bj/write-string msg))
+
+(defn serve-stdio
+  "Answers one JSON-RPC message per line of *in* on *out*, one response
+   per line, flushed after each, until *in* ends. A notification writes
+   nothing."
+  [server]
+  (loop []
+    (when-let [line (read-line)]
+      (when-let [response (:response (handle-line server line nil))]
+        (println (write-message response))
+        (flush))
+      (recur))))
+
 (defn handle-message
   "{:response r :status s} for one request line: r is nil for a
    notification, s the HTTP status it calls for on /mcp. briko.mcp
@@ -290,7 +367,7 @@
   [nb writer session line opts]
   (let [catalog (if (contains? opts :skills) (:skills opts) @skills/served)
         sign (or (:sign opts) (signer-for writer))]
-    (rpc/handle-line (server nb writer session catalog sign) line {:headers (:headers opts)})))
+    (handle-line (server nb writer session catalog sign) line {:headers (:headers opts)})))
 
 (defn handle
   "The response to one request line, or nil for a notification - see
@@ -323,5 +400,5 @@
     (k/verify-in-background! nb)
     (k/keep-flushing! nb)
     (k/keep-checkpointing! nb)
-    (rpc/serve-stdio (server nb writer session @skills/served (signer-for writer)))
+    (serve-stdio (server nb writer session @skills/served (signer-for writer)))
     (k/close! nb)))
