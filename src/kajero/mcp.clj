@@ -23,9 +23,11 @@
    unknown tool answers -32602 and an unknown method -32601. This
    namespace supplies the methods (see server).
 
-   Every message is read and written by briko.json: a line must hold
-   exactly one JSON value of RFC 8259 within max-message-bytes, and every
-   hidden code point in an answer is written as \\uXXXX."
+   briko.mcp also reads and writes every message, on stdio and on /mcp
+   alike: a line must hold exactly one JSON value of RFC 8259 within
+   max-message-bytes, text it refuses answers -32700 naming the rule in
+   data.rule, and every hidden code point in an answer is written as
+   \\uXXXX."
   (:require [briko.json :as bj]
             [briko.mcp :as rpc]
             ;; briko.json resolves cheshire when first used; requiring it
@@ -299,56 +301,19 @@
    kajero.data reads."
   data/max-edn-bytes)
 
-(def ^:private read-options {:max-bytes max-message-bytes})
-
-(def ^:private not-a-value
-  "The refusals of text that holds no single JSON value at all. They
-   answer as briko.mcp answers text it cannot read; every other refusal
-   names the bound or rule the text broke."
-  #{:briko.json/invalid-input :briko.json/malformed :briko.json/no-value :briko.json/trailing-value})
-
-(defn- parse-error [e]
-  {:response {:jsonrpc "2.0"
-              :id nil
-              :error {:code rpc/parse-error
-                      :message (if (contains? not-a-value (:type (ex-data e)))
-                                 "parse error: not a JSON value"
-                                 (str "parse error: " (ex-message e)))}}
-   :status 200})
-
-(defn- read-message
-  "The JSON value `line` holds, or the briko.json refusal of it."
-  [line]
-  (try
-    (bj/parse-string line read-options)
-    (catch clojure.lang.ExceptionInfo e
-      (if (bj/refusal? e) e (throw e)))))
-
-(defn- handle-line
-  "{:response r :status s} for one request line to `server`, as
-   briko.mcp/handle-message answers the message it holds."
-  [server line opts]
-  (let [msg (read-message line)]
-    (if (instance? Throwable msg)
-      (parse-error msg)
-      (rpc/handle-message server msg opts))))
-
 (defn write-message
-  "A JSON-RPC message as one line of JSON text."
+  "A JSON-RPC response as one line of JSON text; one briko.json cannot
+   write answers -32603 for the same id."
   [msg]
-  (bj/write-string msg))
+  (rpc/write-response msg))
 
 (defn serve-stdio
   "Answers one JSON-RPC message per line of *in* on *out*, one response
    per line, flushed after each, until *in* ends. A notification writes
-   nothing."
+   nothing, and a line longer than max-message-bytes answers -32700
+   without being held whole."
   [server]
-  (loop []
-    (when-let [line (read-line)]
-      (when-let [response (:response (handle-line server line nil))]
-        (println (write-message response))
-        (flush))
-      (recur))))
+  (rpc/serve-stdio server {:max-message-bytes max-message-bytes}))
 
 (defn handle-message
   "{:response r :status s} for one request line: r is nil for a
@@ -367,7 +332,8 @@
   [nb writer session line opts]
   (let [catalog (if (contains? opts :skills) (:skills opts) @skills/served)
         sign (or (:sign opts) (signer-for writer))]
-    (handle-line (server nb writer session catalog sign) line {:headers (:headers opts)})))
+    (rpc/handle-line (server nb writer session catalog sign) line
+                     {:headers (:headers opts) :max-message-bytes max-message-bytes})))
 
 (defn handle
   "The response to one request line, or nil for a notification - see

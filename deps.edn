@@ -5,7 +5,7 @@
         ;; briko signs and verifies records, checkpoints and skill
         ;; manifests, answers the MCP protocol, reads untrusted EDN and
         ;; reads and writes JSON
-        io.github.metio/briko {:git/sha "f23bbdb699f616b0e4263a737b53821ad33eea79"}
+        io.github.metio/briko {:git/sha "b021a2190f6a9a5171d006fbb0d8c8c7a58e7cf2"}
         ;; kajero.tik derives and verifies cited tickets in process through
         ;; tik.api; kajero.tik-store-test builds its tik stores with tik.cli
         io.github.metio/tik {:git/sha "85d61ce032712e58da24e09ecc444d840901ca61"}

@@ -48,9 +48,10 @@ check the tool name against `tools/list`. Data in `data_edn` is one EDN
 form, nested at most 64 deep, with no tag but `#inst` and `#uuid`.
 
 Each request is one strict JSON value of at most 16 MiB. A request that
-names an object key twice, nests deeper than 64 levels, holds a raw
-control character in a string or a number beyond a double answers a
-JSON-RPC parse error (-32700) naming the rule it broke. Answers write
+is not exactly one JSON value, names an object key twice, nests deeper
+than 64 levels, holds a raw control character in a string or a number
+beyond a double answers a JSON-RPC parse error (-32700) naming the rule
+it broke in its message and in `data.rule`, without quoting the request. Answers write
 control, bidirectional and zero-width characters as `\uXXXX`, so a JSON
 reader gets the same text back. An entry whose data holds a map with two
 keys that JSON spells alike, such as `nil` and `""`, cannot be returned:
