@@ -17,12 +17,12 @@
                      see kajero.checkpoint/settings; the command line reads
                      checkpoints and never signs one"
   (:require [cheshire.core :as json]
-            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.pprint :as pp]
             [clojure.string :as str]
             [kajero.checkpoint :as checkpoint]
             [kajero.core :as k]
+            [kajero.data :as data]
             [kajero.skills :as skills])
   (:gen-class))
 
@@ -80,14 +80,8 @@
   (when-let [ls (seq (get flags :label))]
     (into {} (map #(let [[k v] (str/split % #"=" 2)] [k (or v "")])) ls)))
 
-(defn- read-edn
-  [s]
-  (try (edn/read-string s)
-       (catch Exception e
-         (throw (ex-info (str "the data is not EDN: " (ex-message e)) {:reason :kajero/bad-edn})))))
-
 (defn- data-of [flags]
-  (when (contains? flags :data) {:data (read-edn (one flags :data))}))
+  (when (contains? flags :data) {:data (data/read-edn (one flags :data))}))
 
 (defn- writer []
   {:actor (env "KAJERO_ACTOR") :key (env "KAJERO_KEY")})
@@ -113,7 +107,7 @@
 
 (defn- read-entries [text]
   (skill-entries (try (json/parse-string text true)
-                      (catch Exception _ (read-edn text)))))
+                      (catch Exception _ (data/read-edn text)))))
 
 (defn- skill-command
   "The result of a skill command, with :kajero/exit 1 in its metadata when
@@ -163,7 +157,7 @@
                                                             :evidence (get flags :evidence)
                                                             :selector (one flags :selector)}))
       "observe-many" (let [f (first pos)
-                           items (read-edn (if (or (nil? f) (= "-" f)) (slurp *in*) (slurp f)))]
+                           items (data/read-edn (if (or (nil? f) (= "-" f)) (slurp *in*) (slurp f)))]
                        (k/observe-many! nb (assoc (writer) :observations items)))
       "retire" (k/retire! nb (first pos) (merge (writer) {:base (one flags :base) :reason (one flags :reason)
                                                           :evidence (get flags :evidence)}))

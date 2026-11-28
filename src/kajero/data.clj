@@ -11,8 +11,25 @@
 
    Schemas are data and never code: malli's evaluator is disabled, so a
    schema whose :fn names a function is refused instead of evaluated."
-  (:require [malli.core :as m]
+  (:require [briko.edn :as bedn]
+            [malli.core :as m]
             [malli.error :as me]))
+
+(def max-edn-bytes
+  "The longest EDN text a client may send as data: the largest request
+   body kajero.web reads."
+  (* 16 1024 1024))
+
+(defn read-edn
+  "The one form EDN text `s` holds, read by briko.edn as data and nothing
+   else: at most max-edn-bytes, nested at most 64 deep, and no tagged
+   literal but #inst and #uuid, as clojure.edn reads them. Anything else
+   is ex-info {:reason :kajero/bad-edn}. Every client's data passes here,
+   so the store holds only data within those bounds."
+  [s]
+  (try (bedn/read-string s {:max-bytes max-edn-bytes :readers default-data-readers})
+       (catch Exception e
+         (throw (ex-info (str "the data is not EDN: " (ex-message e)) {:reason :kajero/bad-edn})))))
 
 (def ^:private options {::m/disable-sci true})
 

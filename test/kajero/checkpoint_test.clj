@@ -500,3 +500,13 @@
                                             :bad (get states :bad-signature 0) :unsigned (get states :unsigned 0)}))))))
       (testing "the generated stores exercise every case"
         (is (every? pos? (vals @seen)) (pr-str @seen))))))
+
+(deftest a-checkpoint-whose-header-nests-too-deep-is-ignored
+  (when-let [env (setup)]
+    (signed-checkpoint env 1)
+    (let [f (latest-file env)
+          lines (str/split-lines (slurp f))]
+      (spit f (str/join "\n" (cons (str (str/join (repeat 100000 "[")) (str/join (repeat 100000 "]"))) (rest lines))))
+      (let [r (checkpoint/read-checkpoint (get-in env [:cfg :pubkey]) f)]
+        (is (false? (:valid? r)))
+        (is (str/starts-with? (:reason r) "unreadable"))))))

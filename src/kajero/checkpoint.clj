@@ -33,9 +33,9 @@
    A checkpoint is taken whole or not at all: a wrong signature, an unknown
    format, a malformed line or any digest that does not match the lines
    makes the whole file ignored with a warning, and nothing of it is used."
-  (:require [briko.ssh-sign :as sign]
+  (:require [briko.edn :as bedn]
+            [briko.ssh-sign :as sign]
             [briko.sshsig :as sshsig]
-            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [kajero.merkle :as merkle]
@@ -227,7 +227,8 @@
         sig-file (io/file (str file ".sig"))]
     (try
       (let [[first-line & body] (str/split-lines (slurp file :encoding "UTF-8"))
-            header (edn/read-string first-line)]
+            ;; read before its signature is checked, so as untrusted text
+            header (bedn/read-string (str first-line))]
         (cond
           (not (map? header)) (bad "the header is not a map")
           (not (.isFile sig-file)) (bad "no signature")
