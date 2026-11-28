@@ -136,6 +136,24 @@ repeat its revision, method and name in the `MCP-Protocol-Version`,
 differ from the body. That revision has no sessions, so its searches and
 reads count for no session in the usage counts.
 
+A request is held to the JSON-RPC and MCP rules before any tool runs:
+
+- A request whose `MCP-Protocol-Version` header names 2026-07-28 but whose
+  `_meta` names no revision is malformed and answers 400 with -32602.
+- A notification (a message without an `id`) runs nothing and gets no
+  response; `/mcp` accepts it with 202, or refuses it with the status of a
+  failed 2026-07-28 check.
+- A `tools/call` naming an unknown tool, or with arguments that are not an
+  object, answers the JSON-RPC error -32602. A refusal by a known tool, such
+  as a stale base, stays a tool result with `isError` and the reason.
+- An unknown method answers -32601 in both eras.
+- Text after the JSON message answers -32700; a message without
+  `"jsonrpc": "2.0"`, a string method, or a string or integer id answers
+  -32600; `params` that are not an object answer -32602.
+- Data sent as `data_edn` (or `--data` on the command line) is one EDN form
+  of at most 16 MiB, nested at most 64 deep, whose only tags are `#inst` and
+  `#uuid`; anything else is refused as `bad-edn`.
+
 `KAJERO_SURFACES` picks what the server offers: `http` for the pages and
 their EDN, `mcp` for the tools, or `http,mcp`. Without it, the server
 offers `http`, and `mcp` too when a token file is given; a surface left
@@ -479,6 +497,11 @@ which exits 0 only when every entry's signature verifies as its actor under
 that actors file and, with `--root`, every file under the directory matches
 the manifest. An actors line that restricts its key with `namespaces="kajero"`
 must also name `kajero-skill-manifest` for the key's manifests to verify.
+A manifest the format refuses fails as `bad-manifest` before its signature
+is read: a path with a `.` or `..` segment, an entry whose URI is not its
+skill's `SKILL.md` or that does not list it, a file of another skill, more
+than 256 files, a file over 100000 bytes or a skill over 400000 bytes. A
+signature no reader could judge fails as `unchecked`.
 `kajero skill manifest` prints the entries this build serves, signed as
 `KAJERO_ACTOR` when `KAJERO_KEY` is set.
 

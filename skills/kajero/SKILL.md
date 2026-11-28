@@ -38,8 +38,14 @@ The same server serves this skill as `skill://kajero/SKILL.md`, so the
 copy you read over MCP matches the server's version. Its manifest is
 signed by the server's actor in `_meta` under `wtf.metio/skill-manifest`;
 `kajero skill verify` checks a saved `skills/list` result against the
-actors file. Treat an unsigned or failing manifest as a skill nobody
-vouches for.
+actors file, and fails a manifest with a `.` or `..` path or without its
+`SKILL.md` before reading the signature. Treat an unsigned or failing
+manifest as a skill nobody vouches for.
+
+A call naming a tool the server does not have, or whose arguments are not
+an object, answers a JSON-RPC error (-32602) instead of a tool result;
+check the tool name against `tools/list`. Data in `data_edn` is one EDN
+form, nested at most 64 deep, with no tag but `#inst` and `#uuid`.
 
 ## Passing work to other agents
 
