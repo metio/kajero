@@ -200,7 +200,7 @@
                  ""
                  nil]]
       (let [e (try (skills/read-result catalog uri) nil (catch clojure.lang.ExceptionInfo e e))]
-        (is (= -32602 (:code (ex-data e))) (pr-str uri))))))
+        (is (= -32602 (:briko.mcp/code (ex-data e))) (pr-str uri))))))
 
 (deftest skills-get-knows-only-the-skill-md-uris
   (let [catalog (demo-catalog)
@@ -208,7 +208,7 @@
     (is (= "skill://demo/SKILL.md" (get-in (skills/get-result catalog sign "skill://demo/SKILL.md") [:skill :uri])))
     (doseq [uri ["skill://unknown/SKILL.md" "skill://demo/references/a.md" "skill://demo" "skill://demo/../demo/SKILL.md" nil]]
       (let [e (try (skills/get-result catalog sign uri) nil (catch clojure.lang.ExceptionInfo e e))]
-        (is (= -32602 (:code (ex-data e))) (pr-str uri))))))
+        (is (= -32602 (:briko.mcp/code (ex-data e))) (pr-str uri))))))
 
 (defn- dir! [] (temp/temp-dir))
 

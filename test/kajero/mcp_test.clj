@@ -422,3 +422,53 @@
     (is (= 200 (:status (search legacy {}))))
     (is (= 200 (:status (search modern (mirrored-headers modern)))))
     (is (= [session nil] @seen) "the handshake session counts; a modern request carrying the header counts for none")))
+
+(deftest a-modern-header-without-meta-is-malformed
+  (let [nb (notebook)
+        m {:jsonrpc "2.0" :id 1 :method "tools/list"}
+        {:keys [status json]} (http-response nb {:actor "claude"} m (mirrored-headers m))]
+    (is (= 400 status))
+    (is (= -32602 (get-in json [:error :code])))
+    (testing "without the header the same request is the handshake era"
+      (let [{:keys [status json]} (http-response nb {:actor "claude"} m {})]
+        (is (= 200 status))
+        (is (= (count mcp/tools) (count (get-in json [:result :tools]))))))))
+
+(deftest a-notification-runs-nothing
+  (let [nb (notebook)
+        write {:jsonrpc "2.0" :method "tools/call"
+               :params {:name "kajero_write" :arguments {:title "written by a notification" :labels {"kind" "fact"}}}}]
+    (testing "over stdio"
+      (is (nil? (mcp/handle nb {:actor "claude"} (json/generate-string write)))))
+    (testing "over HTTP, accepted with 202"
+      (let [{:keys [status body]} (http-response nb {:actor "claude"} write {})]
+        (is (= 202 status))
+        (is (= "" body))))
+    (testing "a modern notification that fails its checks carries the refusal's status"
+      (let [m (modern-message write)]
+        (is (= 400 (:status (http-response nb {:actor "claude"} m (dissoc (mirrored-headers m) "mcp-name")))))))
+    (is (empty? (k/search nb "")) "no notification wrote an entry")))
+
+(deftest a-call-the-protocol-cannot-route-is-an-invalid-params-error
+  (let [nb (notebook)
+        answer (fn [params] (mcp/handle nb {:actor "claude"}
+                                        (json/generate-string {:jsonrpc "2.0" :id 7 :method "tools/call" :params params})))]
+    (testing "an unknown tool"
+      (let [r (answer {:name "kajero_delete" :arguments {}})]
+        (is (= -32602 (get-in r [:error :code])))
+        (is (= 7 (:id r)))
+        (is (nil? (:result r)))))
+    (testing "arguments that are not an object"
+      (is (= -32602 (get-in (answer {:name "kajero_search" :arguments ["~x"]}) [:error :code]))))
+    (testing "absent arguments are an empty object, which the tool judges"
+      (is (false? (get-in (answer {:name "kajero_labels"}) [:result :isError]))))
+    (testing "a refusal of a known tool is still a tool error"
+      (let [r (answer {:name "kajero_get" :arguments {:entry "nope"}})]
+        (is (true? (get-in r [:result :isError])))
+        (is (= "no-entry" (get (json/parse-string (get-in r [:result :content 0 :text])) "refused")))))))
+
+(deftest an-unknown-legacy-method-is-not-found
+  (let [nb (notebook)
+        r (mcp/handle nb {} "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"prompts/list\"}")]
+    (is (= -32601 (get-in r [:error :code])))
+    (is (= 3 (:id r)))))
