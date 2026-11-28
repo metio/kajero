@@ -47,6 +47,16 @@ an object, answers a JSON-RPC error (-32602) instead of a tool result;
 check the tool name against `tools/list`. Data in `data_edn` is one EDN
 form, nested at most 64 deep, with no tag but `#inst` and `#uuid`.
 
+Each request is one strict JSON value of at most 16 MiB. A request that
+names an object key twice, nests deeper than 64 levels, holds a raw
+control character in a string or a number beyond a double answers a
+JSON-RPC parse error (-32700) naming the rule it broke. Answers write
+control, bidirectional and zero-width characters as `\uXXXX`, so a JSON
+reader gets the same text back. An entry whose data holds a map with two
+keys that JSON spells alike, such as `nil` and `""`, cannot be returned:
+the call is refused with `unwritable-result`, and the entry needs a
+revision with distinct keys.
+
 ## Passing work to other agents
 
 The notebook is the place to leave anything another agent or a later
