@@ -5,7 +5,8 @@
    nothing else, a forged or broken one is ignored whole, a record that
    disappears is reported until it returns, and the verdicts are those of
    full verification whatever the checkpoint says."
-  (:require [clojure.edn :as edn]
+  (:require [briko.ssh-sign :as sign]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
@@ -21,8 +22,7 @@
             [kajero.test-keys :as keys]
             [kajero.test-temp :as temp]
             [kajero.verify :as verify]
-            [kajero.web :as web]
-            [briko.ssh-sign :as sign])
+            [kajero.web :as web])
   (:import (java.io File)
            (java.util Random)))
 

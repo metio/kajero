@@ -1,7 +1,8 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.mcp-test
-  (:require [cheshire.core :as json]
+  (:require [briko.skill-manifest :as sm]
+            [cheshire.core :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
@@ -236,7 +237,7 @@
           (is (= uri (:uri c)))
           (is (= "text/markdown" mimeType))
           (is (= size (alength b)))
-          (is (= digest (skills/digest b)))))
+          (is (= digest (sm/digest b)))))
       (testing "the manifest signature verifies against the actors file"
         (if actors
           (is (= {:verified? true :actor "claude"} (skills/verify-entry actors entry)))

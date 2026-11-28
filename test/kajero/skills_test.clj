@@ -1,15 +1,16 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.skills-test
-  (:require [cheshire.core :as json]
+  (:require [briko.skill-manifest :as sm]
+            [briko.ssh-sign :as sign]
+            [cheshire.core :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.skill-files :as files]
             [kajero.skills :as skills]
             [kajero.test-keys :as tk]
-            [kajero.test-temp :as temp]
-            [briko.ssh-sign :as sign])
+            [kajero.test-temp :as temp])
   (:import (java.net URLClassLoader)
            (java.nio.file Files)
            (java.nio.file.attribute FileAttribute)))
@@ -75,12 +76,12 @@
             :let [b (byte-array (get repo (subs uri (count "skill://kajero/"))))]]
       (is (= size (alength b)) uri)
       (is (re-matches #"sha256:[0-9a-f]{64}" digest))
-      (is (= digest (skills/digest b)) uri)
+      (is (= digest (sm/digest b)) uri)
       (is (= size (:size (get files uri)))))))
 
 (deftest a-known-digest
   (is (= "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-         (skills/digest (byte-array 0)))))
+         (sm/digest (byte-array 0)))))
 
 (def ^:private md
   (.getBytes "---\nname: demo\ndescription: A demo skill.\n---\n\n# Demo\n\nRead `references/a.md`.\n" "UTF-8"))
@@ -90,10 +91,10 @@
 
 (deftest the-canonical-bytes-are-the-shared-format
   (let [entry (get-in (demo-catalog) [:skills "demo"])
-        d (fn [s] (skills/digest (.getBytes ^String s "UTF-8")))]
+        d (fn [s] (sm/digest (.getBytes ^String s "UTF-8")))]
     (is (= (str "skill-manifest v1\n"
                 "skill skill://demo/SKILL.md\n"
-                "file " (skills/digest md) " " (alength ^bytes md) " skill://demo/SKILL.md\n"
+                "file " (sm/digest md) " " (alength ^bytes md) " skill://demo/SKILL.md\n"
                 "file " (d "# A\n") " 4 skill://demo/references/a.md\n")
            (String. (skills/canonical-bytes entry) "UTF-8")))
     (testing "the order of the resources does not change the bytes"
@@ -140,13 +141,21 @@
       (is (= {:verified? true :actor "claude"} (skills/verify-entry actors signed)))
       (testing "it verifies after a JSON round trip, as a client reads it"
         (is (:verified? (skills/verify-entry actors (json/parse-string (json/generate-string signed))))))
-      (testing "a changed digest, size, URI or added file fails"
-        (doseq [tampered [(assoc-in signed [:resources 0 :digest] (skills/digest (.getBytes "evil" "UTF-8")))
+      (testing "a changed digest, size or added file fails"
+        (doseq [tampered [(assoc-in signed [:resources 0 :digest] (sm/digest (.getBytes "evil" "UTF-8")))
                           (update-in signed [:resources 0 :size] inc)
-                          (update signed :resources conj {:uri "skill://demo/evil.md" :digest (skills/digest (byte-array 0)) :size 0})
-                          (update signed :resources (comp vec rest))
-                          (assoc signed :uri "skill://demo/references/a.md")]]
+                          (update signed :resources conj {:uri "skill://demo/evil.md" :digest (sm/digest (byte-array 0)) :size 0})]]
           (is (= :bad-signature (:reason (skills/verify-entry actors tampered))))))
+      (testing "a manifest the format refuses fails before its signature is read"
+        (doseq [[why malformed] [["SKILL.md left out" (update signed :resources (comp vec rest))]
+                                 ["the entry names another file than SKILL.md" (assoc signed :uri "skill://demo/references/a.md")]
+                                 ["a .. segment" (update signed :resources conj {:uri "skill://demo/../x.md" :digest (sm/digest (byte-array 0)) :size 0})]
+                                 ["a . segment" (update signed :resources conj {:uri "skill://demo/./x.md" :digest (sm/digest (byte-array 0)) :size 0})]
+                                 ["a file of another skill" (update signed :resources conj {:uri "skill://other/x.md" :digest (sm/digest (byte-array 0)) :size 0})]
+                                 ["a file beyond the size limit" (assoc-in signed [:resources 1 :size] (inc skills/max-file-bytes))]]]
+          (is (= :bad-manifest (:reason (skills/verify-entry actors malformed))) why)))
+      (testing "an unknown manifest format fails as such"
+        (is (= :wrong-format (:reason (skills/verify-entry actors (assoc-in signed [:_meta skills/meta-key :format] "skill-manifest-v2"))))))
       (testing "another actor's claim fails"
         (is (= :bad-signature (:reason (skills/verify-entry actors (assoc-in signed [:_meta skills/meta-key :actor] "seb"))))))
       (testing "a key the actors file does not hold fails"

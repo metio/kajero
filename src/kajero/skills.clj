@@ -11,28 +11,25 @@
    so a URI with .., an absolute or encoded path, or anything the build
    did not stage names nothing and is refused.
 
-   The signature is the shared skill-manifest-v1 format of tik and kajero
-   (kajero entry 77f9c463): an SSHSIG over the manifest's canonical bytes
-   under the namespace kajero-skill-manifest, made with the key of the
-   actor the server writes as, and carried in the entry's _meta under
-   wtf.metio/skill-manifest. A server without a key says so there."
+   The signature is the shared skill-manifest-v1 format of tik and kajero,
+   signed and verified by briko.skill-manifest: an SSHSIG over the
+   manifest's canonical bytes under the namespace kajero-skill-manifest,
+   made with the key of the actor the server writes as, and carried in the
+   entry's _meta under wtf.metio/skill-manifest. A server without a key
+   says so there."
   (:require [briko.mcp :as rpc]
+            [briko.skill-manifest :as sm]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [kajero.skill-files :as files]
-            [briko.ssh-sign :as sign])
+            [kajero.skill-files :as files])
   (:import (java.nio ByteBuffer)
-           (java.nio.charset CharacterCodingException CodingErrorAction StandardCharsets)
-           (java.security MessageDigest)
-           (java.util HexFormat)))
+           (java.nio.charset CharacterCodingException CodingErrorAction StandardCharsets)))
 
 (def extension-id "io.modelcontextprotocol/skills")
 
 (def meta-key
   "The _meta key of the manifest signature on a skill entry."
-  "wtf.metio/skill-manifest")
-
-(def manifest-format "skill-manifest-v1")
+  sm/meta-key)
 
 (def signature-namespace
   "The ssh-keygen -Y namespace of manifest signatures, so a manifest
@@ -83,11 +80,6 @@
 
 ;; ---------------------------------------------------------------- catalog
 
-(defn digest
-  "`sha256:` and the lowercase hex sha256 of `b`."
-  [^bytes b]
-  (str "sha256:" (.formatHex (HexFormat/of) (.digest (MessageDigest/getInstance "SHA-256") b))))
-
 (defn- utf-8-text
   "`b` as a string when it is valid UTF-8, else nil."
   [^bytes b]
@@ -103,8 +95,6 @@
     text "text/plain"
     :else "application/octet-stream"))
 
-(defn skill-uri [skill path] (str "skill://" skill "/" path))
-
 (defn catalog
   "A catalog from {skill {relative path bytes}}: per skill its entry
    without the signature, and per URI the file to serve."
@@ -117,9 +107,9 @@
                                        (do (when-not (files/safe-path? path)
                                              (refuse! (str "not a path a skill may serve: " path) {}))
                                            (let [text (utf-8-text b)]
-                                             [path {:uri (skill-uri skill path) :path path :bytes b :text text
+                                             [path {:uri (sm/skill-uri skill path) :path path :bytes b :text text
                                                     :mimeType (mime-type path text)
-                                                    :digest (digest b) :size (alength b)}]))))
+                                                    :digest (sm/digest b) :size (alength b)}]))))
                           skill-md (or (get docs "SKILL.md") (refuse! (str "the skill " skill " has no SKILL.md") {}))
                           fm (frontmatter (or (:text skill-md) (refuse! "SKILL.md is not UTF-8" {})))]]
                 (do (when-not (= skill (get fm "name"))
@@ -172,48 +162,38 @@
   (into (sorted-map)
         (for [[skill {:keys [resources]}] skills]
           [skill {:files (into (sorted-map) (for [{:keys [uri size]} resources]
-                                              [(subs uri (count (skill-uri skill ""))) size]))
+                                              [(subs uri (count (sm/skill-uri skill ""))) size]))
                   :total (reduce + (map :size resources))
                   :text? (every? #(some? (:text (get files (:uri %)))) resources)}])))
 
 ;; --------------------------------------------------------------- manifest
 
-(def ^:private uri-pattern #"skill://[a-z0-9]+(-[a-z0-9]+)*(/[A-Za-z0-9._-]+)+")
+(def limits
+  "The bounds a manifest is signed and verified under: Claude Code's
+   per-file and per-skill sizes, and at most 256 files."
+  {:max-files 256 :max-file-bytes max-file-bytes :max-skill-bytes max-skill-bytes})
 
 (defn canonical-bytes
-  "The skill-manifest-v1 canonical bytes of a skill entry, built from its
-   uri and resources alone. Refuses an entry whose URIs, digests or sizes
-   the format cannot write unambiguously."
-  ^bytes [{:keys [uri resources]}]
-  (when-not (and (string? uri) (re-matches uri-pattern uri))
-    (refuse! (str "the skill URI " (pr-str uri) " cannot be signed") {}))
-  (when-not (and (sequential? resources) (seq resources))
-    (refuse! "the skill entry has no file manifest" {}))
-  (let [lines (for [{:keys [uri digest size]} (sort-by :uri resources)]
-                (do (when-not (and (string? uri) (re-matches uri-pattern uri)
-                                   (string? digest) (re-matches #"sha256:[0-9a-f]{64}" digest)
-                                   (integer? size) (<= 0 size))
-                      (refuse! (str "the manifest resource " (pr-str uri) " cannot be signed") {}))
-                    (str "file " digest " " size " " uri "\n")))]
-    (when-not (apply distinct? (map :uri resources))
-      (refuse! "the manifest names a file twice" {}))
-    (.getBytes (str "skill-manifest v1\n" "skill " uri "\n" (str/join lines)) StandardCharsets/UTF_8)))
+  "The skill-manifest-v1 canonical bytes of a skill entry (see
+   briko.skill-manifest/canonical-bytes). Refuses an entry the format
+   cannot write unambiguously, or one beyond `limits`."
+  ^bytes [entry]
+  (sm/canonical-bytes entry limits))
 
 (defn sign-entry
   "The _meta value of the signature over `entry` by `writer`
    {:actor :key}: signed when the writer has both, else marked unsigned
    with the reason."
   [entry {:keys [actor key]}]
-  (let [unsigned (fn [reason] {:format manifest-format :signed false :reason reason})]
-    (cond
-      (not key) (unsigned "the server has no signing key")
-      (not actor) (unsigned "the server has a signing key but no actor to sign as")
-      :else (try
-              {:format manifest-format :signed true :namespace signature-namespace :actor actor
-               :signature (String. (sign/sign-bytes key (canonical-bytes entry) signature-namespace)
-                                   StandardCharsets/UTF_8)}
-              (catch Exception e
-                (unsigned (str "signing failed: " (ex-message e))))))))
+  (update-keys
+   (cond
+     (not key) (sm/unsigned "the server has no signing key")
+     (str/blank? actor) (sm/unsigned "the server has a signing key but no actor to sign as")
+     :else (try
+             (sm/sign entry {:key-file key :actor actor :namespace signature-namespace :limits limits})
+             (catch Exception e
+               (sm/unsigned (str "signing failed: " (ex-message e))))))
+   keyword))
 
 (defn signer
   "A function from a skill entry to the entry carrying `writer`'s
@@ -228,35 +208,37 @@
                     m))]
         (assoc entry :_meta {meta-key m})))))
 
+(defn- reason
+  "The reason kajero names for a verdict of briko.skill-manifest/verify
+   that is not :verified."
+  [{:keys [verdict] :as v} actors?]
+  (case verdict
+    :missing :no-signature
+    :unsigned :unsigned
+    :wrong-namespace :wrong-namespace
+    :malformed (cond
+                 (str/starts-with? (:reason v) "unknown manifest format") :wrong-format
+                 (= "a signed value needs an actor and a signature" (:reason v)) :bad-signature
+                 :else :bad-manifest)
+    (:bad-signature :unchecked) (if actors? verdict :no-actors)))
+
 (defn verify-entry
   "Whether the skill entry `entry` carries a manifest signature that
    verifies under the allowed-signers file `actors`, as
    {:verified? :actor :reason}. :reason names why it does not verify:
    :no-signature, :unsigned, :wrong-format, :wrong-namespace,
-   :bad-manifest, :no-actors or :bad-signature. Keys may be keywords or
-   strings, as JSON reads them."
+   :bad-manifest (a manifest the format refuses: a path with . or .., a
+   skill without its SKILL.md, a file of another skill, beyond `limits`),
+   :no-actors, :bad-signature, or :unchecked when no reader could judge
+   the key. Keys may be keywords or strings, as JSON reads them."
   [actors entry]
-  (let [kw (fn kw [x] (cond (map? x) (into {} (map (fn [[k v]] [(if (string? k) (keyword k) k) (kw v)])) x)
-                            (sequential? x) (mapv kw x)
-                            :else x))
-        entry (kw (if (map? entry) entry {}))
-        m (get-in entry [:_meta (keyword meta-key)])
-        {:keys [format signed namespace actor signature]} m
-        fail (fn [reason] {:verified? false :actor actor :reason reason})]
-    (cond
-      (not (map? m)) (fail :no-signature)
-      (not= manifest-format format) (fail :wrong-format)
-      (not (true? signed)) (fail :unsigned)
-      (not= signature-namespace namespace) (fail :wrong-namespace)
-      (not (and (string? actor) (string? signature))) (fail :bad-signature)
-      (not (and actors (.isFile (io/file (str actors))))) (fail :no-actors)
-      :else (let [message (try (canonical-bytes entry) (catch clojure.lang.ExceptionInfo _ nil))]
-              (cond
-                (nil? message) (fail :bad-manifest)
-                (true? (sign/verify-bytes (str actors) message (.getBytes ^String signature StandardCharsets/UTF_8)
-                                          actor signature-namespace))
-                {:verified? true :actor actor}
-                :else (fail :bad-signature))))))
+  (let [f (some-> actors str io/file)
+        actors? (boolean (and f (.isFile f)))
+        v (sm/verify (if actors? (slurp f :encoding "UTF-8") "") entry
+                     {:namespaces #{signature-namespace} :limits limits})]
+    (if (= :verified (:verdict v))
+      {:verified? true :actor (:actor v)}
+      {:verified? false :actor (:actor v) :reason (reason v actors?)})))
 
 (defn verify-files
   "The manifest resources of `entry` whose bytes, as `read-bytes` returns
@@ -268,7 +250,7 @@
     (vec (for [{r-uri :uri :keys [digest size]} resources
                :let [path (when (str/starts-with? r-uri root) (subs r-uri (count root)))
                      ^bytes b (when (files/safe-path? path) (read-bytes path))]
-               :when (not (and b (= size (alength b)) (= digest (kajero.skills/digest b))))]
+               :when (not (and b (= size (alength b)) (= digest (sm/digest b))))]
            {:uri r-uri :reason (if b :mismatch :missing)}))))
 
 ;; ------------------------------------------------------------ the protocol
