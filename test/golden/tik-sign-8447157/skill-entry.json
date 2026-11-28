@@ -1,0 +1,21 @@
+{
+  "uri" : "skill://kajero/SKILL.md",
+  "frontmatter" : {
+    "description" : "Read and write the team's kajero notebook - labelled entries of what agents and humans learned, with signed revisions and observations, structured data and tik tickets as evidence. Use when the user mentions kajero or the notebook, before investigating something another agent may already have worked out (a gotcha, a fact about a system, a how-to), after learning something worth keeping, when handing notes, data or a document to another agent or a later session, and whenever you checked an entry against reality and can say whether it held.",
+    "name" : "kajero"
+  },
+  "resources" : [ {
+    "uri" : "skill://kajero/SKILL.md",
+    "digest" : "sha256:e027a3d5ab4ac396c03bcdbe0478f8a96b6666a24bba782980bb7f239efa9992",
+    "size" : 18343
+  } ],
+  "_meta" : {
+    "wtf.metio/skill-manifest" : {
+      "format" : "skill-manifest-v1",
+      "signed" : true,
+      "namespace" : "kajero-skill-manifest",
+      "actor" : "claude",
+      "signature" : "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgCU7N864qXi6g9FTtbH8u8wwrPK\ntehIz6Tw3L8Zl50psAAAAVa2FqZXJvLXNraWxsLW1hbmlmZXN0AAAAAAAAAAZzaGE1MTIA\nAABTAAAAC3NzaC1lZDI1NTE5AAAAQOm7nHpk2v4OgOVel/XBDwSsw3HxdTizUnzRFMP/46\nwn8gwNBIquBP5V3+WB1pyDBWLtvdghyhpIQwM5Zs3hswU=\n-----END SSH SIGNATURE-----\n"
+    }
+  }
+}

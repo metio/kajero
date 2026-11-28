@@ -1,0 +1,1 @@
+{:entry "0a47c350-cf7c-40e0-9d8c-fcdfab87cfd5", :revision "sha256-287f477c4990b3219e2c9dc975470b99e23313b741b3b5e4bf6473ddbb4db2ba", :outcome "failed", :evidence ["the schema rejects an int host"], :actor "claude", :at "2026-11-28T00:23:47.198026679Z"}
