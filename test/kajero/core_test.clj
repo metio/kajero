@@ -1,15 +1,15 @@
 ;; SPDX-FileCopyrightText: The kajero Authors
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 (ns kajero.core-test
-  (:require [clojure.java.io :as io]
+  (:require [briko.ssh-sign]
+            [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [kajero.core :as k]
             [kajero.record :as record]
             [kajero.standing :as standing]
             [kajero.store :as store]
             [kajero.test-keys :as keys]
-            [kajero.test-temp :as temp]
-            [briko.ssh-sign])
+            [kajero.test-temp :as temp])
   (:import (java.time Instant)))
 
 (def ^:private ^:dynamic *backend* :sqlite)
